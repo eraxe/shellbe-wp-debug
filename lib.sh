@@ -20,12 +20,6 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Create templates directory if it doesn't exist
-if [ ! -d "$TEMPLATES_DIR" ]; then
-    mkdir -p "$TEMPLATES_DIR/php" || { echo -e "${RED}Error: Could not create templates directory${NC}"; exit 1; }
-    chmod 755 "$TEMPLATES_DIR" "$TEMPLATES_DIR/php"
-fi
-
 # Create WP paths file if it doesn't exist
 if [ ! -f "$WP_PATHS_FILE" ]; then
     touch "$WP_PATHS_FILE" || { echo -e "${RED}Error: Could not create WP paths file${NC}"; exit 1; }
@@ -36,131 +30,12 @@ if [ ! -f "$DEFAULT_CONFIG_FILE" ]; then
     touch "$DEFAULT_CONFIG_FILE" || { echo -e "${RED}Error: Could not create default WP config file${NC}"; exit 1; }
 fi
 
-# Create or update a template file
-create_template_file() {
-    local filename="$1"
-    local content="$2"
-    local directory=$(dirname "$filename")
-    
-    # Create directory if it doesn't exist
-    if [ ! -d "$directory" ]; then
-        mkdir -p "$directory" || return 1
-    fi
-    
-    # Write content to file
-    echo "$content" > "$filename" || return 1
-    return 0
-}
-
-# Initialize template files
-initialize_templates() {
-    # PHP template for getting site name
-    cat > "$TEMPLATES_DIR/php/get_site_name.php" << 'EOT'
-<?php
-include "wp-config.php";
-try {
-    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-    if (!$conn) {
-        echo "Database connection failed";
-        exit(1);
-    }
-    
-    // Prepare query to prevent SQL injection
-    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
-    mysqli_stmt_bind_param($stmt, 's', $option_name);
-    $option_name = 'blogname';
-    
-    if (mysqli_stmt_execute($stmt)) {
-        mysqli_stmt_bind_result($stmt, $option_value);
-        if (mysqli_stmt_fetch($stmt)) {
-            echo $option_value;
-        }
-    }
-    
-    mysqli_stmt_close($stmt);
-    mysqli_close($conn);
-} catch (Exception $e) {
-    echo "Error: " . $e->getMessage();
-    exit(1);
-}
-EOT
-
-    # PHP template for getting active theme
-    cat > "$TEMPLATES_DIR/php/get_active_theme.php" << 'EOT'
-<?php
-include "wp-config.php";
-try {
-    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-    if (!$conn) {
-        echo "Database connection failed";
-        exit(1);
-    }
-    
-    // Prepare query to prevent SQL injection
-    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
-    mysqli_stmt_bind_param($stmt, 's', $option_name);
-    $option_name = 'template';
-    
-    if (mysqli_stmt_execute($stmt)) {
-        mysqli_stmt_bind_result($stmt, $option_value);
-        if (mysqli_stmt_fetch($stmt)) {
-            echo $option_value;
-        }
-    }
-    
-    mysqli_stmt_close($stmt);
-    mysqli_close($conn);
-} catch (Exception $e) {
-    echo "Error: " . $e->getMessage();
-    exit(1);
-}
-EOT
-
-    # PHP template for getting active plugins
-    cat > "$TEMPLATES_DIR/php/get_active_plugins.php" << 'EOT'
-<?php
-include "wp-config.php";
-try {
-    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-    if (!$conn) {
-        echo "Database connection failed";
-        exit(1);
-    }
-    
-    // Prepare query to prevent SQL injection
-    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
-    mysqli_stmt_bind_param($stmt, 's', $option_name);
-    $option_name = 'active_plugins';
-    
-    if (mysqli_stmt_execute($stmt)) {
-        mysqli_stmt_bind_result($stmt, $option_value);
-        if (mysqli_stmt_fetch($stmt)) {
-            // Just count the serialized values
-            $plugin_count = substr_count($option_value, 's:');
-            echo $plugin_count . " plugins active";
-        } else {
-            echo "0 plugins active";
-        }
-    }
-    
-    mysqli_stmt_close($stmt);
-    mysqli_close($conn);
-} catch (Exception $e) {
-    echo "Error: " . $e->getMessage();
-    exit(1);
-}
-EOT
-}
-
-# Call the function to initialize templates
-initialize_templates
-
 # Load configuration from file
 load_config() {
     local config_file="$PLUGIN_DIR/config.ini"
     local config_name="$1"
     local default_value="$2"
-    
+
     if [ ! -f "$config_file" ]; then
         echo "$default_value"
         return
@@ -678,51 +553,35 @@ get_debug_log_path() {
     return 0
 }
 
-# Execute PHP code safely via SSH with proper escaping
+# Execute PHP code safely via SSH
 execute_php_remote() {
     local profile="$1"
     local wp_dir="$2"
-    local template_file="$3"
-    local output_file="$4"
-    local table_prefix="$5"
+    local php_code="$3"
 
     # Input validation
-    if [ -z "$profile" ] || [ -z "$wp_dir" ] || [ -z "$template_file" ]; then
+    if [ -z "$profile" ] || [ -z "$wp_dir" ] || [ -z "$php_code" ]; then
         echo "Error: Missing required parameters for execute_php_remote" >&2
         return 1
     fi
 
-    # If output file not specified, create a temporary one
-    if [ -z "$output_file" ]; then
-        output_file="/tmp/wpd_php_${RANDOM}.php"
-    fi
-
-    # Check if template file exists
-    if [ ! -f "$template_file" ]; then
-        echo "Error: Template file not found: $template_file" >&2
-        return 1
-    fi
-
-    # Replace placeholders in template
-    local temp_php_file="/tmp/wpd_php_${RANDOM}.php"
-    cp "$template_file" "$temp_php_file"
-
-    # Replace table prefix if provided
-    if [ -n "$table_prefix" ]; then
-        sed -i "s/{TABLE_PREFIX}/$table_prefix/g" "$temp_php_file"
-    fi
+    # Create a temporary PHP file
+    local temp_file="/tmp/wpd_temp_${RANDOM}.php"
+    echo "<?php" > "$temp_file"
+    echo "$php_code" >> "$temp_file"
+    echo "?>" >> "$temp_file"
 
     # Copy script to remote server
-    shellbe_ssh_command "$profile" "cat > \"$output_file\"" < "$temp_php_file"
-    shellbe_ssh_command "$profile" "chmod +x \"$output_file\"" > /dev/null 2>&1
+    local remote_file="/tmp/wpd_temp_${RANDOM}.php"
+    shellbe_ssh_command "$profile" "cat > \"$remote_file\"" < "$temp_file"
 
     # Execute the PHP file
-    local result=$(shellbe_ssh_command "$profile" "cd $wp_dir && php $output_file")
+    local result=$(shellbe_ssh_command "$profile" "cd $wp_dir && php $remote_file")
     local exit_code=$?
 
     # Clean up temporary files
-    rm -f "$temp_php_file"
-    shellbe_ssh_command "$profile" "rm -f \"$output_file\"" > /dev/null 2>&1
+    rm -f "$temp_file"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_file\"" > /dev/null 2>&1
 
     if [ $exit_code -ne 0 ]; then
         echo "Error: Failed to execute PHP code on remote server" >&2
@@ -836,42 +695,37 @@ EOF
     local wp_dir=$(dirname "$wp_config_path")
     local table_prefix=$(get_wp_table_prefix "$profile" "$wp_config_path")
 
-    # Create PHP file for checking site URL
-    local php_template="$TEMPLATES_DIR/php/check_site_url.php"
-    cat > "$php_template" << EOF
-<?php
-include "wp-config.php";
-try {
-    \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-    if (!\$conn) {
-        echo "Database connection failed";
+    # Create PHP code to check site URL
+    local php_code="
+    include \"wp-config.php\";
+    try {
+        \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+        if (!\$conn) {
+            echo \"Database connection failed\";
+            exit(1);
+        }
+
+        // Prepare query to prevent SQL injection
+        \$stmt = mysqli_prepare(\$conn, \"SELECT option_value FROM ${table_prefix}options WHERE option_name = ? LIMIT 1\");
+        mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
+        \$option_name = 'siteurl';
+
+        if (mysqli_stmt_execute(\$stmt)) {
+            mysqli_stmt_bind_result(\$stmt, \$option_value);
+            if (mysqli_stmt_fetch(\$stmt)) {
+                echo \$option_value;
+            }
+        }
+
+        mysqli_stmt_close(\$stmt);
+        mysqli_close(\$conn);
+    } catch (Exception \$e) {
+        echo \"Error: \" . \$e->getMessage();
         exit(1);
     }
+    "
 
-    // Prepare query to prevent SQL injection
-    \$stmt = mysqli_prepare(\$conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
-    mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
-    \$option_name = 'siteurl';
-
-    if (mysqli_stmt_execute(\$stmt)) {
-        mysqli_stmt_bind_result(\$stmt, \$option_value);
-        if (mysqli_stmt_fetch(\$stmt)) {
-            echo \$option_value;
-        }
-    }
-
-    mysqli_stmt_close(\$stmt);
-    mysqli_close(\$conn);
-} catch (Exception \$e) {
-    echo "Error: " . \$e->getMessage();
-    exit(1);
-}
-EOF
-
-    local site_url=$(execute_php_remote "$profile" "$wp_dir" "$php_template" "" "$table_prefix")
-
-    # Clean up the temporary PHP template
-    rm -f "$php_template"
+    local site_url=$(execute_php_remote "$profile" "$wp_dir" "$php_code")
 
     if [[ "$site_url" =~ \.(dev|test|stage|local|example)(\.|$) ]]; then
         return 1
@@ -1109,7 +963,7 @@ EOF
         echo "Error: Failed to check permissions"
         return 1
     fi
-    
+
     echo "$result"
     return 0
 }
@@ -1119,10 +973,40 @@ get_wp_site_name() {
     local profile="$1"
     local wp_dir=$(dirname "$2")
     local table_prefix=$(get_wp_table_prefix "$profile" "$2")
-    
-    # Use the execute_php_remote function to run PHP code using the template
-    local site_name=$(execute_php_remote "$profile" "$wp_dir" "$TEMPLATES_DIR/php/get_site_name.php" "" "$table_prefix")
-    
+
+    # Create PHP code to get site name
+    local php_code="
+    include \"wp-config.php\";
+    try {
+        \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+        if (!\$conn) {
+            echo \"Database connection failed\";
+            exit(1);
+        }
+
+        // Prepare query to prevent SQL injection
+        \$stmt = mysqli_prepare(\$conn, \"SELECT option_value FROM ${table_prefix}options WHERE option_name = ? LIMIT 1\");
+        mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
+        \$option_name = 'blogname';
+
+        if (mysqli_stmt_execute(\$stmt)) {
+            mysqli_stmt_bind_result(\$stmt, \$option_value);
+            if (mysqli_stmt_fetch(\$stmt)) {
+                echo \$option_value;
+            }
+        }
+
+        mysqli_stmt_close(\$stmt);
+        mysqli_close(\$conn);
+    } catch (Exception \$e) {
+        echo \"Error: \" . \$e->getMessage();
+        exit(1);
+    }
+    "
+
+    # Execute the PHP code
+    local site_name=$(execute_php_remote "$profile" "$wp_dir" "$php_code")
+
     echo "$site_name"
     return 0
 }
@@ -1132,10 +1016,40 @@ get_wp_active_theme() {
     local profile="$1"
     local wp_dir=$(dirname "$2")
     local table_prefix=$(get_wp_table_prefix "$profile" "$2")
-    
-    # Use the execute_php_remote function to run PHP code using the template
-    local theme=$(execute_php_remote "$profile" "$wp_dir" "$TEMPLATES_DIR/php/get_active_theme.php" "" "$table_prefix")
-    
+
+    # Create PHP code to get active theme
+    local php_code="
+    include \"wp-config.php\";
+    try {
+        \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+        if (!\$conn) {
+            echo \"Database connection failed\";
+            exit(1);
+        }
+
+        // Prepare query to prevent SQL injection
+        \$stmt = mysqli_prepare(\$conn, \"SELECT option_value FROM ${table_prefix}options WHERE option_name = ? LIMIT 1\");
+        mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
+        \$option_name = 'template';
+
+        if (mysqli_stmt_execute(\$stmt)) {
+            mysqli_stmt_bind_result(\$stmt, \$option_value);
+            if (mysqli_stmt_fetch(\$stmt)) {
+                echo \$option_value;
+            }
+        }
+
+        mysqli_stmt_close(\$stmt);
+        mysqli_close(\$conn);
+    } catch (Exception \$e) {
+        echo \"Error: \" . \$e->getMessage();
+        exit(1);
+    }
+    "
+
+    # Execute the PHP code
+    local theme=$(execute_php_remote "$profile" "$wp_dir" "$php_code")
+
     echo "$theme"
     return 0
 }
@@ -1145,9 +1059,43 @@ get_wp_active_plugins() {
     local profile="$1"
     local wp_dir=$(dirname "$2")
     local table_prefix=$(get_wp_table_prefix "$profile" "$2")
-    
-    # Use the execute_php_remote function to run PHP code using the template
-    local plugins=$(execute_php_remote "$profile" "$wp_dir" "$TEMPLATES_DIR/php/get_active_plugins.php" "" "$table_prefix")
+
+    # Create PHP code to get active plugins
+    local php_code="
+    include \"wp-config.php\";
+    try {
+        \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+        if (!\$conn) {
+            echo \"Database connection failed\";
+            exit(1);
+        }
+
+        // Prepare query to prevent SQL injection
+        \$stmt = mysqli_prepare(\$conn, \"SELECT option_value FROM ${table_prefix}options WHERE option_name = ? LIMIT 1\");
+        mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
+        \$option_name = 'active_plugins';
+
+        if (mysqli_stmt_execute(\$stmt)) {
+            mysqli_stmt_bind_result(\$stmt, \$option_value);
+            if (mysqli_stmt_fetch(\$stmt)) {
+                // Just count the serialized values
+                \$plugin_count = substr_count(\$option_value, 's:');
+                echo \$plugin_count . \" plugins active\";
+            } else {
+                echo \"0 plugins active\";
+            }
+        }
+
+        mysqli_stmt_close(\$stmt);
+        mysqli_close(\$conn);
+    } catch (Exception \$e) {
+        echo \"Error: \" . \$e->getMessage();
+        exit(1);
+    }
+    "
+
+    # Execute the PHP code
+    local plugins=$(execute_php_remote "$profile" "$wp_dir" "$php_code")
     
     echo "$plugins"
     return 0
