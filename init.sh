@@ -4,8 +4,13 @@
 # Run when the plugin is first enabled
 #
 
+set -e  # Exit on error
+
 # Get plugin directory
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source library functions
+source "$PLUGIN_DIR/lib.sh"
 
 # Colors for better UI
 RED='\033[0;31m'
@@ -18,44 +23,81 @@ NC='\033[0m' # No Color
 echo -e "${BLUE}Initializing WordPress Debug Plugin (WPD)...${NC}"
 
 # Create necessary directories
-mkdir -p "$PLUGIN_DIR/hooks"
+mkdir -p "$PLUGIN_DIR/hooks" || {
+    echo -e "${RED}Error: Failed to create hooks directory${NC}" >&2
+    exit 1
+}
 
 # Ensure all scripts are executable
-chmod +x "$PLUGIN_DIR/plugin.sh"
-chmod +x "$PLUGIN_DIR/lib.sh"
-chmod +x "$PLUGIN_DIR/init.sh"
+for script in "$PLUGIN_DIR"/plugin.sh "$PLUGIN_DIR"/lib.sh "$PLUGIN_DIR"/init.sh; do
+    if [ -f "$script" ]; then
+        chmod +x "$script" || {
+            echo -e "${RED}Error: Failed to make $script executable${NC}" >&2
+            exit 1
+        }
+    else
+        echo -e "${RED}Error: Required script $script not found${NC}" >&2
+        exit 1
+    fi
+done
 
 if [ -f "$PLUGIN_DIR/cleanup.sh" ]; then
-    chmod +x "$PLUGIN_DIR/cleanup.sh"
+    chmod +x "$PLUGIN_DIR/cleanup.sh" || {
+        echo -e "${RED}Warning: Failed to make cleanup.sh executable${NC}" >&2
+    }
 fi
 
 # Make hook scripts executable
 for hook_script in "$PLUGIN_DIR/hooks"/*.sh; do
     if [ -f "$hook_script" ]; then
-        chmod +x "$hook_script"
+        chmod +x "$hook_script" || {
+            echo -e "${RED}Warning: Failed to make hook script $hook_script executable${NC}" >&2
+        }
     fi
 done
 
 # Create config file if it doesn't exist
 if [ ! -f "$PLUGIN_DIR/config.ini" ]; then
-    echo "# WordPress Debug Plugin Configuration" > "$PLUGIN_DIR/config.ini"
-    echo "default_search_paths=/var/www/html,/srv/www,/home" >> "$PLUGIN_DIR/config.ini"
-    echo "max_search_depth=5" >> "$PLUGIN_DIR/config.ini"
-    echo "backup_before_changes=true" >> "$PLUGIN_DIR/config.ini"
-    echo "debug_log_limit=1000" >> "$PLUGIN_DIR/config.ini"
+    cat > "$PLUGIN_DIR/config.ini" << EOF
+# WordPress Debug Plugin Configuration
+# Generated: $(date +"%Y-%m-%d %H:%M:%S")
+
+# Comma-separated list of paths to search for WordPress installations
+default_search_paths=/var/www/html,/srv/www,/home
+
+# Maximum depth to search for WordPress installations
+max_search_depth=5
+
+# Whether to create a backup of wp-config.php before making changes
+backup_before_changes=true
+
+# Maximum number of log lines to display
+debug_log_limit=1000
+EOF
     
-    echo -e "${GREEN}Created default configuration.${NC}"
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Created default configuration.${NC}"
+    else
+        echo -e "${RED}Error: Failed to create configuration file${NC}" >&2
+        exit 1
+    fi
 fi
 
 # Create WordPress paths file if it doesn't exist
 if [ ! -f "$PLUGIN_DIR/wp_paths.ini" ]; then
-    touch "$PLUGIN_DIR/wp_paths.ini"
+    touch "$PLUGIN_DIR/wp_paths.ini" || {
+        echo -e "${RED}Error: Failed to create WordPress paths file${NC}" >&2
+        exit 1
+    }
     echo -e "${GREEN}Created WordPress paths file.${NC}"
 fi
 
 # Create default WordPress selection file if it doesn't exist
 if [ ! -f "$PLUGIN_DIR/default_wp.ini" ]; then
-    touch "$PLUGIN_DIR/default_wp.ini"
+    touch "$PLUGIN_DIR/default_wp.ini" || {
+        echo -e "${RED}Error: Failed to create default WordPress selection file${NC}" >&2
+        exit 1
+    }
     echo -e "${GREEN}Created default WordPress selection file.${NC}"
 fi
 
@@ -64,14 +106,15 @@ CONFIG_DIR="$HOME/.shellbe"
 if [ -f "$CONFIG_DIR/config" ]; then
     echo -e "${BLUE}Checking for existing WordPress installations on saved profiles...${NC}"
     
-    # Source library functions
-    source "$PLUGIN_DIR/lib.sh"
-    
     # Count of profiles with WordPress
     found_wp=0
     
     # Read profiles from config
     while IFS=: read -r name host user port identity options; do
+        if [ -z "$name" ]; then
+            continue  # Skip empty lines
+        }
+        
         echo -e "${YELLOW}Checking profile '$name'... ${NC}"
         
         # Check if we can connect to the server
@@ -89,9 +132,12 @@ if [ -f "$CONFIG_DIR/config" ]; then
                 DEFAULT_SEARCH_PATHS="/var/www/html,/srv/www,/home"
             fi
             
-            if [ -z "$MAX_SEARCH_DEPTH" ]; then
+            if [ -z "$MAX_SEARCH_DEPTH" ] || ! [[ "$MAX_SEARCH_DEPTH" =~ ^[0-9]+$ ]]; then
                 MAX_SEARCH_DEPTH=5
             fi
+            
+            # Sanitize paths for security
+            DEFAULT_SEARCH_PATHS=$(echo "$DEFAULT_SEARCH_PATHS" | tr -d ';&|$()')
             
             wp_installations=$(list_wp_installations "$name" "$DEFAULT_SEARCH_PATHS" "$MAX_SEARCH_DEPTH")
             
@@ -104,14 +150,22 @@ if [ -f "$CONFIG_DIR/config" ]; then
                 
                 # Process each installation
                 while IFS= read -r wp_path; do
-                    save_wp_installation "$name" "$wp_path"
-                    echo -e "  ${GREEN}Saved:${NC} $wp_path"
+                    if [ -n "$wp_path" ]; then  # Skip empty lines
+                        if save_wp_installation "$name" "$wp_path"; then
+                            echo -e "  ${GREEN}Saved:${NC} $wp_path"
+                        else
+                            echo -e "  ${RED}Failed to save:${NC} $wp_path"
+                        fi
+                    fi
                 done <<< "$wp_installations"
                 
                 # If only one installation found, set it as default
                 if [ "$installation_count" -eq 1 ]; then
-                    save_default_wp_installation "$name" "$wp_installations"
-                    echo -e "  ${GREEN}Set as default WordPress installation${NC}"
+                    if save_default_wp_installation "$name" "$wp_installations"; then
+                        echo -e "  ${GREEN}Set as default WordPress installation${NC}"
+                    else
+                        echo -e "  ${RED}Failed to set default WordPress installation${NC}"
+                    fi
                 else
                     # Ask if user wants to set a default
                     read -p "  Do you want to set a default WordPress installation for '$name'? (y/n): " set_default
@@ -119,24 +173,28 @@ if [ -f "$CONFIG_DIR/config" ]; then
                         # Display numbered list of installations
                         echo -e "  ${YELLOW}Select default WordPress installation:${NC}"
                         
-                        local i=1
-                        local wp_paths=()
+                        i=1
+                        wp_paths=()
                         
                         while IFS= read -r path; do
-                            wp_paths+=("$path")
-                            echo -e "  ${CYAN}$i)${NC} $path"
-                            i=$((i + 1))
+                            if [ -n "$path" ]; then  # Skip empty lines
+                                wp_paths+=("$path")
+                                echo -e "  ${CYAN}$i)${NC} $path"
+                                i=$((i + 1))
+                            fi
                         done <<< "$wp_installations"
                         
                         # Get user selection
-                        local selection
                         read -p "  Enter selection number: " selection
                         
                         # Validate selection
                         if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -gt 0 ] && [ "$selection" -le "${#wp_paths[@]}" ]; then
-                            local selected_path="${wp_paths[$((selection - 1))]}"
-                            save_default_wp_installation "$name" "$selected_path"
-                            echo -e "  ${GREEN}Set default WordPress installation to:${NC} $selected_path"
+                            selected_path="${wp_paths[$((selection - 1))]}"
+                            if save_default_wp_installation "$name" "$selected_path"; then
+                                echo -e "  ${GREEN}Set default WordPress installation to:${NC} $selected_path"
+                            else
+                                echo -e "  ${RED}Failed to set default WordPress installation${NC}"
+                            fi
                         else
                             echo -e "  ${RED}Invalid selection. No default set.${NC}"
                         fi
@@ -156,6 +214,8 @@ if [ -f "$CONFIG_DIR/config" ]; then
     
     if [ "$found_wp" -gt 0 ]; then
         echo -e "${GREEN}Saved WordPress paths for $found_wp profile(s)${NC}"
+    else
+        echo -e "${YELLOW}No WordPress installations found on any profile${NC}"
     fi
 fi
 
@@ -163,8 +223,12 @@ fi
 SHELLBE_PLUGINS_DIR="$HOME/.shellbe/plugins"
 if [ -d "$SHELLBE_PLUGINS_DIR" ]; then
     if [ ! -L "$SHELLBE_PLUGINS_DIR/wpd" ] && [ "$PLUGIN_DIR" != "$SHELLBE_PLUGINS_DIR/wpd" ]; then
-        ln -sf "$PLUGIN_DIR" "$SHELLBE_PLUGINS_DIR/wpd"
-        echo -e "${GREEN}Created symbolic link for easy access${NC}"
+        ln -sf "$PLUGIN_DIR" "$SHELLBE_PLUGINS_DIR/wpd" || {
+            echo -e "${YELLOW}Warning: Failed to create symbolic link. Plugin will still work.${NC}"
+        }
+        if [ -L "$SHELLBE_PLUGINS_DIR/wpd" ]; then
+            echo -e "${GREEN}Created symbolic link for easy access${NC}"
+        fi
     fi
 fi
 

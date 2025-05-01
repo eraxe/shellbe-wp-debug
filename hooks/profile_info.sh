@@ -16,6 +16,12 @@ HOST="$2"
 USER="$3"
 PORT="$4"
 
+# Validate required arguments
+if [ -z "$PROFILE_NAME" ]; then
+    echo -e "\033[0;31m[WP-DEBUG Error]\033[0m Missing profile name" >&2
+    exit 1
+fi
+
 # Check for WordPress installations
 WP_INSTALLATIONS=$(get_wp_installations "$PROFILE_NAME")
 DEFAULT_WP_PATH=$(get_default_wp_installation "$PROFILE_NAME")
@@ -37,7 +43,7 @@ if [ -n "$WP_INSTALLATIONS" ]; then
         
         # Try to get site name
         SITE_NAME=$(get_wp_site_name "$PROFILE_NAME" "$DEFAULT_WP_PATH")
-        if [ -n "$SITE_NAME" ]; then
+        if [ -n "$SITE_NAME" ] && [[ ! "$SITE_NAME" =~ ^Error: ]]; then
             echo -e "\033[0;36mSite Name:${NC}\t$SITE_NAME"
         fi
         
@@ -53,7 +59,7 @@ if [ -n "$WP_INSTALLATIONS" ]; then
                 LOG_EXISTS=$(shellbe_ssh_command "$PROFILE_NAME" "[ -f \"$LOG_PATH\" ] && echo 'yes' || echo 'no'")
                 
                 if [ "$LOG_EXISTS" = "yes" ]; then
-                    LOG_SIZE=$(shellbe_ssh_command "$PROFILE_NAME" "ls -lh \"$LOG_PATH\" | awk '{print \$5}'")
+                    LOG_SIZE=$(shellbe_ssh_command "$PROFILE_NAME" "ls -lh \"$LOG_PATH\" 2>/dev/null | awk '{print \$5}' || echo 'unknown'")
                     echo -e "\033[0;36mDebug Log:${NC}\t$LOG_PATH ($LOG_SIZE)"
                 else
                     echo -e "\033[0;36mDebug Log:${NC}\t$LOG_PATH (not created yet)"

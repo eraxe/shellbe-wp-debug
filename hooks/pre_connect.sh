@@ -16,6 +16,12 @@ HOST="$2"
 USER="$3"
 PORT="$4"
 
+# Validate required arguments
+if [ -z "$PROFILE_NAME" ]; then
+    echo -e "\033[0;31m[WP-DEBUG Error]\033[0m Missing profile name" >&2
+    exit 1
+fi
+
 # Check if WordPress path is saved for this profile
 DEFAULT_WP_PATH=$(get_default_wp_installation "$PROFILE_NAME")
 
@@ -52,16 +58,18 @@ else
         DEBUG_ENABLED=false
         
         while IFS= read -r WP_PATH; do
-            DEBUG_STATUS=$(get_debug_setting "$PROFILE_NAME" "$WP_PATH" "WP_DEBUG")
-            
-            if [ "$DEBUG_STATUS" = "true" ]; then
-                DEBUG_ENABLED=true
+            if [ -n "$WP_PATH" ]; then  # Skip empty lines
+                DEBUG_STATUS=$(get_debug_setting "$PROFILE_NAME" "$WP_PATH" "WP_DEBUG")
                 
-                # Check if it's a production site
-                if is_production_site "$PROFILE_NAME" "$WP_PATH"; then
-                    echo -e "\033[0;31m[WP-DEBUG WARNING]\033[0m Production site with debugging enabled at: $WP_PATH"
-                else
-                    echo -e "\033[0;33m[WP-DEBUG]\033[0m Debugging enabled at: $WP_PATH"
+                if [ "$DEBUG_STATUS" = "true" ]; then
+                    DEBUG_ENABLED=true
+                    
+                    # Check if it's a production site
+                    if is_production_site "$PROFILE_NAME" "$WP_PATH"; then
+                        echo -e "\033[0;31m[WP-DEBUG WARNING]\033[0m Production site with debugging enabled at: $WP_PATH"
+                    else
+                        echo -e "\033[0;33m[WP-DEBUG]\033[0m Debugging enabled at: $WP_PATH"
+                    fi
                 fi
             fi
         done <<< "$WP_INSTALLATIONS"

@@ -8,40 +8,74 @@
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source library functions
-source "$PLUGIN_DIR/lib.sh"
+source "$PLUGIN_DIR/lib.sh" || {
+    echo -e "${RED}Error: Failed to load library functions${NC}" >&2
+    exit 1
+}
 
-# Colors for better UI
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-# Configuration file
+# Define configuration file paths
 CONFIG_FILE="$PLUGIN_DIR/config.ini"
 DEFAULT_CONFIG_FILE="$PLUGIN_DIR/default_wp.ini"
+WP_PATHS_FILE="$PLUGIN_DIR/wp_paths.ini"
 
 # Initialize configuration if it doesn't exist
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "# WordPress Debug Plugin Configuration" > "$CONFIG_FILE"
-    echo "default_search_paths=/var/www/html,/srv/www,/home" >> "$CONFIG_FILE"
-    echo "max_search_depth=5" >> "$CONFIG_FILE"
-    echo "backup_before_changes=true" >> "$CONFIG_FILE"
-    echo "debug_log_limit=1000" >> "$CONFIG_FILE"
+    cat > "$CONFIG_FILE" << EOF
+# WordPress Debug Plugin Configuration
+# Generated: $(date +"%Y-%m-%d %H:%M:%S")
+default_search_paths=/var/www/html,/srv/www,/home
+max_search_depth=5
+backup_before_changes=true
+debug_log_limit=1000
+EOF
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Error: Failed to create configuration file${NC}" >&2
+        exit 1
+    }
+}
+
+# Create required files if they don't exist
+for file in "$DEFAULT_CONFIG_FILE" "$WP_PATHS_FILE"; do
+    if [ ! -f "$file" ]; then
+        touch "$file" || {
+            echo -e "${RED}Error: Failed to create required file: $file${NC}" >&2
+            exit 1
+        }
+    fi
+done
+
+# Load configuration settings
+load_config_setting() {
+    local setting="$1"
+    local default="$2"
+    
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "$default"
+        return 0
+    fi
+    
+    local value=$(grep "^$setting=" "$CONFIG_FILE" | cut -d= -f2-)
+    if [ -z "$value" ]; then
+        echo "$default"
+    else
+        echo "$value"
+    fi
+}
+
+DEFAULT_SEARCH_PATHS=$(load_config_setting "default_search_paths" "/var/www/html,/srv/www,/home")
+MAX_SEARCH_DEPTH=$(load_config_setting "max_search_depth" "5")
+BACKUP_BEFORE_CHANGES=$(load_config_setting "backup_before_changes" "true")
+DEBUG_LOG_LIMIT=$(load_config_setting "debug_log_limit" "1000")
+
+# Validate MAX_SEARCH_DEPTH is a number
+if ! [[ "$MAX_SEARCH_DEPTH" =~ ^[0-9]+$ ]]; then
+    MAX_SEARCH_DEPTH=5
 fi
 
-# Create default WordPress selection file if it doesn't exist
-if [ ! -f "$DEFAULT_CONFIG_FILE" ]; then
-    touch "$DEFAULT_CONFIG_FILE"
+# Validate DEBUG_LOG_LIMIT is a number
+if ! [[ "$DEBUG_LOG_LIMIT" =~ ^[0-9]+$ ]]; then
+    DEBUG_LOG_LIMIT=1000
 fi
-
-# Parse configuration
-DEFAULT_SEARCH_PATHS=$(grep "^default_search_paths=" "$CONFIG_FILE" | cut -d= -f2)
-MAX_SEARCH_DEPTH=$(grep "^max_search_depth=" "$CONFIG_FILE" | cut -d= -f2)
-BACKUP_BEFORE_CHANGES=$(grep "^backup_before_changes=" "$CONFIG_FILE" | cut -d= -f2)
-DEBUG_LOG_LIMIT=$(grep "^debug_log_limit=" "$CONFIG_FILE" | cut -d= -f2)
 
 # Usage function
 show_usage() {
@@ -97,9 +131,11 @@ select_server() {
     local i=1
     local server_array=()
     while IFS= read -r server; do
-        server_array+=("$server")
-        echo -e "${CYAN}$i)${NC} $server"
-        i=$((i + 1))
+        if [ -n "$server" ]; then  # Skip empty lines
+            server_array+=("$server")
+            echo -e "${CYAN}$i)${NC} $server"
+            i=$((i + 1))
+        fi
     done <<< "$servers"
     
     # Add option to exit
@@ -128,6 +164,12 @@ select_server() {
 select_action() {
     local profile="$1"
     
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
+    
     echo -e "${BLUE}WordPress actions for server: ${CYAN}$profile${NC}"
     
     # Display actions
@@ -144,6 +186,12 @@ select_action() {
     # Get user selection
     local selection
     read -p "Enter selection number: " selection
+    
+    # Validate selection
+    if [[ ! "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt 9 ]; then
+        echo -e "${RED}Invalid selection${NC}"
+        return 1
+    }
     
     # Execute selected action
     case "$selection" in
@@ -190,6 +238,12 @@ select_action() {
 select_wp_installation() {
     local profile="$1"
     local action="$2"
+    
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
     
     # Get list of WordPress installations
     local installations=$(get_wp_installations "$profile")
@@ -251,13 +305,15 @@ select_wp_installation() {
     local i=1
     local wp_array=()
     while IFS= read -r wp_path; do
-        wp_array+=("$wp_path")
-        local marker=" "
-        if [ "$wp_path" = "$default_path" ]; then
-            marker="*"
+        if [ -n "$wp_path" ]; then  # Skip empty lines
+            wp_array+=("$wp_path")
+            local marker=" "
+            if [ "$wp_path" = "$default_path" ]; then
+                marker="*"
+            fi
+            echo -e "${CYAN}$i)${NC} $wp_path $marker"
+            i=$((i + 1))
         fi
-        echo -e "${CYAN}$i)${NC} $wp_path $marker"
-        i=$((i + 1))
     done <<< "$installations"
     
     # Add option to go back
@@ -283,8 +339,11 @@ select_wp_installation() {
     
     # If action is to set default, handle it separately
     if [ "$action" = "default" ]; then
-        save_default_wp_installation "$profile" "$selected_path"
-        echo -e "${GREEN}Default WordPress installation set to:${NC} $selected_path"
+        if save_default_wp_installation "$profile" "$selected_path"; then
+            echo -e "${GREEN}Default WordPress installation set to:${NC} $selected_path"
+        else
+            echo -e "${RED}Failed to set default WordPress installation${NC}"
+        }
         return 0
     fi
     
@@ -318,6 +377,12 @@ select_wp_installation() {
 list_wp_installations_interactive() {
     local profile="$1"
     
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
+    
     # Get list of WordPress installations
     local installations=$(get_wp_installations "$profile")
     
@@ -348,33 +413,35 @@ list_wp_installations_interactive() {
     
     local count=1
     while IFS= read -r wp_path; do
-        local marker=" "
-        if [ "$wp_path" = "$default_path" ]; then
-            marker="(Default)"
+        if [ -n "$wp_path" ]; then  # Skip empty lines
+            local marker=" "
+            if [ "$wp_path" = "$default_path" ]; then
+                marker="(Default)"
+            fi
+            
+            # Get WordPress version
+            local wp_version=$(get_wp_version "$profile" "$wp_path")
+            
+            # Check debugging status
+            local debug_status=$(get_debug_setting "$profile" "$wp_path" "WP_DEBUG")
+            local debug_indicator="Debugging: "
+            
+            if [ "$debug_status" = "true" ]; then
+                debug_indicator="${debug_indicator}${GREEN}Enabled${NC}"
+            else
+                debug_indicator="${debug_indicator}${RED}Disabled${NC}"
+            fi
+            
+            echo -e "${CYAN}$count)${NC} $wp_path ${YELLOW}$marker${NC}"
+            echo -e "   WordPress: $wp_version, $debug_indicator"
+            
+            # Check if it's a production site
+            if is_production_site "$profile" "$wp_path"; then
+                echo -e "   ${RED}Production site detected!${NC}"
+            fi
+            
+            count=$((count + 1))
         fi
-        
-        # Get WordPress version
-        local wp_version=$(get_wp_version "$profile" "$wp_path")
-        
-        # Check debugging status
-        local debug_status=$(get_debug_setting "$profile" "$wp_path" "WP_DEBUG")
-        local debug_indicator="Debugging: "
-        
-        if [ "$debug_status" = "true" ]; then
-            debug_indicator="${debug_indicator}${GREEN}Enabled${NC}"
-        else
-            debug_indicator="${debug_indicator}${RED}Disabled${NC}"
-        fi
-        
-        echo -e "${CYAN}$count)${NC} $wp_path ${YELLOW}$marker${NC}"
-        echo -e "   WordPress: $wp_version, $debug_indicator"
-        
-        # Check if it's a production site
-        if is_production_site "$profile" "$wp_path"; then
-            echo -e "   ${RED}Production site detected!${NC}"
-        fi
-        
-        count=$((count + 1))
     done <<< "$installations"
     echo -e "${YELLOW}-------------------------------------${NC}"
     
@@ -385,6 +452,12 @@ list_wp_installations_interactive() {
 find_wp_config() {
     local profile="$1"
     shift
+    
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
     
     # Parse options
     local search_paths="$DEFAULT_SEARCH_PATHS"
@@ -413,6 +486,15 @@ find_wp_config() {
         shift
     done
     
+    # Sanitize inputs for security
+    search_paths=$(echo "$search_paths" | tr -d ';&|$()')
+    
+    # Ensure search_depth is a number
+    if ! [[ "$search_depth" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Invalid search depth: $search_depth. Using default: $MAX_SEARCH_DEPTH${NC}" >&2
+        search_depth="$MAX_SEARCH_DEPTH"
+    fi
+    
     echo -e "${BLUE}Searching for WordPress configuration files on $profile...${NC}"
     echo -e "${YELLOW}This may take a while depending on the server size...${NC}"
     
@@ -421,6 +503,12 @@ find_wp_config() {
     
     # Run the command on the remote server
     local results=$(shellbe_ssh_command "$profile" "$find_cmd")
+    local exit_code=$?
+    
+    if [ $exit_code -ne 0 ]; then
+        echo -e "${RED}Error: Failed to search for WordPress installations${NC}" >&2
+        return 1
+    }
     
     if [ -z "$results" ]; then
         echo -e "${RED}No WordPress configuration files found.${NC}"
@@ -436,15 +524,20 @@ find_wp_config() {
     clear_wp_installations "$profile"
     
     while IFS= read -r path; do
-        echo -e "${CYAN}$count)${NC} $path"
-        
-        # Save path
-        if [ "$save_path" = true ]; then
-            save_wp_installation "$profile" "$path"
-            echo -e "   ${GREEN}✓ Saved${NC}"
+        if [ -n "$path" ]; then  # Skip empty lines
+            echo -e "${CYAN}$count)${NC} $path"
+            
+            # Save path
+            if [ "$save_path" = true ]; then
+                if save_wp_installation "$profile" "$path"; then
+                    echo -e "   ${GREEN}✓ Saved${NC}"
+                else
+                    echo -e "   ${RED}✗ Failed to save${NC}"
+                }
+            fi
+            
+            count=$((count + 1))
         fi
-        
-        count=$((count + 1))
     done <<< "$results"
     
     echo -e "${GREEN}Found and saved ${CYAN}$((count - 1))${GREEN} WordPress installations for server: ${CYAN}$profile${NC}"
@@ -452,8 +545,11 @@ find_wp_config() {
     # If this is the first installation, set it as default
     if [ "$count" -eq 2 ] && [ "$save_path" = true ]; then
         local first_path=$(echo "$results" | head -1)
-        save_default_wp_installation "$profile" "$first_path"
-        echo -e "${GREEN}Set default WordPress installation to:${NC} $first_path"
+        if save_default_wp_installation "$profile" "$first_path"; then
+            echo -e "${GREEN}Set default WordPress installation to:${NC} $first_path"
+        else
+            echo -e "${RED}Failed to set default WordPress installation${NC}"
+        fi
     elif [ "$count" -gt 2 ] && [ "$save_path" = true ]; then
         echo -e "${YELLOW}Multiple WordPress installations found.${NC}"
         echo -e "${YELLOW}Use 'shellbe wpd $profile default' to set your preferred default.${NC}"
@@ -466,6 +562,12 @@ find_wp_config() {
 configure_debugging() {
     local profile="$1"
     shift
+    
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -502,6 +604,12 @@ configure_debugging() {
     elif [ -n "$custom_path" ]; then
         wp_config_path="$custom_path"
     fi
+    
+    # Verify wp_config_path exists and is accessible
+    if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+        echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
+        return 1
+    }
     
     echo -e "${BLUE}Configure WordPress debugging on $profile...${NC}"
     echo -e "${YELLOW}Path: $wp_config_path${NC}"
@@ -559,9 +667,22 @@ configure_debugging() {
     local selection
     read -p "Enter setting to change (1-9): " selection
     
+    # Validate selection
+    if [[ ! "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt 9 ]; then
+        echo -e "${RED}Invalid selection${NC}"
+        return 1
+    }
+    
     # Create backup if configured
     if [ "$BACKUP_BEFORE_CHANGES" = "true" ]; then
-        create_config_backup "$profile" "$wp_config_path"
+        if ! create_config_backup "$profile" "$wp_config_path"; then
+            echo -e "${RED}Warning: Failed to create backup of wp-config.php${NC}" >&2
+            read -p "Continue without backup? (y/n): " continue_without_backup
+            if [[ "$continue_without_backup" != "y" && "$continue_without_backup" != "Y" ]]; then
+                echo -e "${YELLOW}Configuration cancelled.${NC}"
+                return 1
+            }
+        fi
     fi
     
     # Execute selected action
@@ -569,11 +690,17 @@ configure_debugging() {
         1)
             # Toggle WP_DEBUG
             if [ "$debug_status" = "true" ]; then
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "false"
-                echo -e "${GREEN}WP_DEBUG disabled${NC}"
+                if set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "false"; then
+                    echo -e "${GREEN}WP_DEBUG disabled${NC}"
+                else
+                    echo -e "${RED}Failed to disable WP_DEBUG${NC}"
+                fi
             else
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"
-                echo -e "${GREEN}WP_DEBUG enabled${NC}"
+                if set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"; then
+                    echo -e "${GREEN}WP_DEBUG enabled${NC}"
+                else
+                    echo -e "${RED}Failed to enable WP_DEBUG${NC}"
+                fi
             fi
             ;;
         2)
@@ -588,17 +715,28 @@ configure_debugging() {
             
             case "$log_selection" in
                 1)
-                    set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"
-                    echo -e "${GREEN}WP_DEBUG_LOG enabled (default location)${NC}"
+                    if set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"; then
+                        echo -e "${GREEN}WP_DEBUG_LOG enabled (default location)${NC}"
+                    else
+                        echo -e "${RED}Failed to enable WP_DEBUG_LOG${NC}"
+                    fi
                     ;;
                 2)
                     read -p "Enter custom log path (e.g. /home/user/wp-debug.log): " custom_log_path
-                    set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "'$custom_log_path'"
-                    echo -e "${GREEN}WP_DEBUG_LOG enabled (custom path: $custom_log_path)${NC}"
+                    # Sanitize the custom log path
+                    custom_log_path=$(echo "$custom_log_path" | tr -d ';&|$()')
+                    if set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "'$custom_log_path'"; then
+                        echo -e "${GREEN}WP_DEBUG_LOG enabled (custom path: $custom_log_path)${NC}"
+                    else
+                        echo -e "${RED}Failed to enable WP_DEBUG_LOG with custom path${NC}"
+                    fi
                     ;;
                 3)
-                    set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "false"
-                    echo -e "${GREEN}WP_DEBUG_LOG disabled${NC}"
+                    if set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "false"; then
+                        echo -e "${GREEN}WP_DEBUG_LOG disabled${NC}"
+                    else
+                        echo -e "${RED}Failed to disable WP_DEBUG_LOG${NC}"
+                    fi
                     ;;
                 *)
                     echo -e "${RED}Invalid selection${NC}"
@@ -608,72 +746,178 @@ configure_debugging() {
         3)
             # Toggle WP_DEBUG_DISPLAY
             if [ "$debug_display" = "true" ]; then
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "false"
-                echo -e "${GREEN}WP_DEBUG_DISPLAY disabled (errors hidden from screen)${NC}"
+                if set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "false"; then
+                    echo -e "${GREEN}WP_DEBUG_DISPLAY disabled (errors hidden from screen)${NC}"
+                else
+                    echo -e "${RED}Failed to disable WP_DEBUG_DISPLAY${NC}"
+                fi
             else
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "true"
-                echo -e "${GREEN}WP_DEBUG_DISPLAY enabled (errors shown on screen)${NC}"
+                if set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "true"; then
+                    echo -e "${GREEN}WP_DEBUG_DISPLAY enabled (errors shown on screen)${NC}"
+                else
+                    echo -e "${RED}Failed to enable WP_DEBUG_DISPLAY${NC}"
+                fi
             fi
             ;;
         4)
             # Toggle SCRIPT_DEBUG
             if [ "$script_debug" = "true" ]; then
-                set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "false"
-                echo -e "${GREEN}SCRIPT_DEBUG disabled (minified scripts)${NC}"
+                if set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "false"; then
+                    echo -e "${GREEN}SCRIPT_DEBUG disabled (minified scripts)${NC}"
+                else
+                    echo -e "${RED}Failed to disable SCRIPT_DEBUG${NC}"
+                fi
             else
-                set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "true"
-                echo -e "${GREEN}SCRIPT_DEBUG enabled (non-minified scripts)${NC}"
+                if set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "true"; then
+                    echo -e "${GREEN}SCRIPT_DEBUG enabled (non-minified scripts)${NC}"
+                else
+                    echo -e "${RED}Failed to enable SCRIPT_DEBUG${NC}"
+                fi
             fi
             ;;
         5)
             # Toggle SAVEQUERIES
             if [ "$savequeries" = "true" ]; then
-                set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "false"
-                echo -e "${GREEN}SAVEQUERIES disabled (don't save database queries)${NC}"
+                if set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "false"; then
+                    echo -e "${GREEN}SAVEQUERIES disabled (don't save database queries)${NC}"
+                else
+                    echo -e "${RED}Failed to disable SAVEQUERIES${NC}"
+                fi
             else
-                set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "true"
-                echo -e "${GREEN}SAVEQUERIES enabled (save database queries)${NC}"
+                if set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "true"; then
+                    echo -e "${GREEN}SAVEQUERIES enabled (save database queries)${NC}"
+                else
+                    echo -e "${RED}Failed to enable SAVEQUERIES${NC}"
+                fi
             fi
             ;;
         6)
             # Quick debug mode - Toggle all
             if [ "$debug_status" = "true" ]; then
                 # Disable all debugging
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "false"
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "false"
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "false"
-                set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "false"
-                set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "false"
-                echo -e "${GREEN}All debugging options disabled${NC}"
+                local success=true
+                
+                if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "false"; then
+                    echo -e "${RED}Failed to disable WP_DEBUG${NC}" >&2
+                    success=false
+                fi
+                if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "false"; then
+                    echo -e "${RED}Failed to disable WP_DEBUG_LOG${NC}" >&2
+                    success=false
+                fi
+                if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "false"; then
+                    echo -e "${RED}Failed to disable WP_DEBUG_DISPLAY${NC}" >&2
+                    success=false
+                fi
+                if ! set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "false"; then
+                    echo -e "${RED}Failed to disable SCRIPT_DEBUG${NC}" >&2
+                    success=false
+                fi
+                if ! set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "false"; then
+                    echo -e "${RED}Failed to disable SAVEQUERIES${NC}" >&2
+                    success=false
+                fi
+                
+                if [ "$success" = true ]; then
+                    echo -e "${GREEN}All debugging options disabled${NC}"
+                else
+                    echo -e "${RED}Some debugging options could not be disabled${NC}"
+                fi
             else
                 # Enable all debugging
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"
-                set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "true"
-                set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "true"
-                set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "true"
-                echo -e "${GREEN}All debugging options enabled${NC}"
+                local success=true
+                
+                if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"; then
+                    echo -e "${RED}Failed to enable WP_DEBUG${NC}" >&2
+                    success=false
+                fi
+                if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"; then
+                    echo -e "${RED}Failed to enable WP_DEBUG_LOG${NC}" >&2
+                    success=false
+                fi
+                if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "true"; then
+                    echo -e "${RED}Failed to enable WP_DEBUG_DISPLAY${NC}" >&2
+                    success=false
+                fi
+                if ! set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "true"; then
+                    echo -e "${RED}Failed to enable SCRIPT_DEBUG${NC}" >&2
+                    success=false
+                fi
+                if ! set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "true"; then
+                    echo -e "${RED}Failed to enable SAVEQUERIES${NC}" >&2
+                    success=false
+                fi
+                
+                if [ "$success" = true ]; then
+                    echo -e "${GREEN}All debugging options enabled${NC}"
+                else
+                    echo -e "${RED}Some debugging options could not be enabled${NC}"
+                fi
             fi
             ;;
         7)
             # Production safe configuration
-            set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"
-            set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"
-            set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "false"
-            set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "false"
-            set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "false"
-            echo -e "${GREEN}Production safe debugging configuration applied${NC}"
-            echo -e "${YELLOW}Errors will be logged but not displayed on screen${NC}"
+            local success=true
+            
+            if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"; then
+                echo -e "${RED}Failed to enable WP_DEBUG${NC}" >&2
+                success=false
+            fi
+            if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"; then
+                echo -e "${RED}Failed to enable WP_DEBUG_LOG${NC}" >&2
+                success=false
+            fi
+            if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "false"; then
+                echo -e "${RED}Failed to disable WP_DEBUG_DISPLAY${NC}" >&2
+                success=false
+            fi
+            if ! set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "false"; then
+                echo -e "${RED}Failed to disable SCRIPT_DEBUG${NC}" >&2
+                success=false
+            fi
+            if ! set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "false"; then
+                echo -e "${RED}Failed to disable SAVEQUERIES${NC}" >&2
+                success=false
+            fi
+            
+            if [ "$success" = true ]; then
+                echo -e "${GREEN}Production safe debugging configuration applied${NC}"
+                echo -e "${YELLOW}Errors will be logged but not displayed on screen${NC}"
+            else
+                echo -e "${RED}Some configuration settings could not be applied${NC}"
+            fi
             ;;
         8)
             # Development configuration
-            set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"
-            set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"
-            set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "true"
-            set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "true"
-            set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "true"
-            echo -e "${GREEN}Development debugging configuration applied${NC}"
-            echo -e "${YELLOW}All debugging options enabled for maximum visibility${NC}"
+            local success=true
+            
+            if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"; then
+                echo -e "${RED}Failed to enable WP_DEBUG${NC}" >&2
+                success=false
+            fi
+            if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"; then
+                echo -e "${RED}Failed to enable WP_DEBUG_LOG${NC}" >&2
+                success=false
+            fi
+            if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "true"; then
+                echo -e "${RED}Failed to enable WP_DEBUG_DISPLAY${NC}" >&2
+                success=false
+            fi
+            if ! set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "true"; then
+                echo -e "${RED}Failed to enable SCRIPT_DEBUG${NC}" >&2
+                success=false
+            fi
+            if ! set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "true"; then
+                echo -e "${RED}Failed to enable SAVEQUERIES${NC}" >&2
+                success=false
+            fi
+            
+            if [ "$success" = true ]; then
+                echo -e "${GREEN}Development debugging configuration applied${NC}"
+                echo -e "${YELLOW}All debugging options enabled for maximum visibility${NC}"
+            else
+                echo -e "${RED}Some configuration settings could not be applied${NC}"
+            fi
             ;;
         9)
             echo -e "${YELLOW}Configuration cancelled${NC}"
@@ -690,6 +934,12 @@ configure_debugging() {
 check_debug_status() {
     local profile="$1"
     shift
+    
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -726,6 +976,12 @@ check_debug_status() {
     elif [ -n "$custom_path" ]; then
         wp_config_path="$custom_path"
     fi
+    
+    # Verify wp_config_path exists and is accessible
+    if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+        echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
+        return 1
+    }
     
     echo -e "${BLUE}Checking WordPress debugging status on $profile...${NC}"
     echo -e "${YELLOW}Path: $wp_config_path${NC}"
@@ -767,7 +1023,7 @@ check_debug_status() {
         # Check if log file exists and is writable
         local log_status=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && echo 'exists' || echo 'not-exists'")
         local log_writable=$(shellbe_ssh_command "$profile" "[ -w \"$log_file\" ] && echo 'writable' || echo 'not-writable'")
-        local log_size=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && ls -lh \"$log_file\" | awk '{print \$5}' || echo 'unknown'")
+        local log_size=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && ls -lh \"$log_file\" 2>/dev/null | awk '{print \$5}' || echo 'unknown'")
         
         if [ "$log_status" = "exists" ]; then
             echo -e "  Status: ${GREEN}Exists${NC} (Size: $log_size)"
@@ -788,7 +1044,7 @@ check_debug_status() {
         # Check if log file exists and is writable
         local log_status=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && echo 'exists' || echo 'not-exists'")
         local log_writable=$(shellbe_ssh_command "$profile" "[ -w \"$log_file\" ] && echo 'writable' || echo 'not-writable'")
-        local log_size=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && ls -lh \"$log_file\" | awk '{print \$5}' || echo 'unknown'")
+        local log_size=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && ls -lh \"$log_file\" 2>/dev/null | awk '{print \$5}' || echo 'unknown'")
         
         if [ "$log_status" = "exists" ]; then
             echo -e "  Status: ${GREEN}Exists${NC} (Size: $log_size)"
@@ -852,6 +1108,12 @@ enable_debugging() {
     local profile="$1"
     shift
     
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
+    
     # Parse options and get WP config path
     local wp_config_path=""
     local custom_path=""
@@ -908,10 +1170,19 @@ enable_debugging() {
         wp_config_path="$custom_path"
         
         if [ "$save_path" = true ]; then
-            save_wp_installation "$profile" "$wp_config_path"
-            echo -e "${GREEN}Path saved for future use with profile '$profile'.${NC}"
+            if save_wp_installation "$profile" "$wp_config_path"; then
+                echo -e "${GREEN}Path saved for future use with profile '$profile'.${NC}"
+            else
+                echo -e "${RED}Failed to save path for future use${NC}" >&2
+            fi
         fi
     fi
+    
+    # Verify wp_config_path exists and is accessible
+    if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+        echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
+        return 1
+    }
     
     echo -e "${BLUE}Enabling WordPress debugging on $profile...${NC}"
     echo -e "${YELLOW}Path: $wp_config_path${NC}"
@@ -939,38 +1210,71 @@ enable_debugging() {
     
     # Create backup if configured
     if [ "$BACKUP_BEFORE_CHANGES" = "true" ]; then
-        create_config_backup "$profile" "$wp_config_path"
+        if ! create_config_backup "$profile" "$wp_config_path"; then
+            echo -e "${RED}Warning: Failed to create backup of wp-config.php${NC}" >&2
+            read -p "Continue without backup? (y/n): " continue_without_backup
+            if [[ "$continue_without_backup" != "y" && "$continue_without_backup" != "Y" ]]; then
+                echo -e "${YELLOW}Debugging not enabled.${NC}"
+                return 1
+            }
+        fi
     fi
     
     # Enable debugging
-    set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"
+    local success=true
+    
+    if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "true"; then
+        echo -e "${RED}Failed to enable WP_DEBUG${NC}" >&2
+        success=false
+    fi
     
     # Configure debug log
     if [ -n "$debug_log_path" ]; then
-        set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "'$debug_log_path'"
+        # Sanitize the debug log path
+        debug_log_path=$(echo "$debug_log_path" | tr -d ';&|$()')
+        if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "'$debug_log_path'"; then
+            echo -e "${RED}Failed to set WP_DEBUG_LOG to custom path${NC}" >&2
+            success=false
+        fi
     else
-        set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"
+        if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "true"; then
+            echo -e "${RED}Failed to enable WP_DEBUG_LOG${NC}" >&2
+            success=false
+        fi
     fi
     
     # Configure debug display
-    set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "$debug_display"
+    if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "$debug_display"; then
+        echo -e "${RED}Failed to set WP_DEBUG_DISPLAY${NC}" >&2
+        success=false
+    fi
     
     # Configure script debug
-    set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "$script_debug"
+    if ! set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "$script_debug"; then
+        echo -e "${RED}Failed to set SCRIPT_DEBUG${NC}" >&2
+        success=false
+    fi
     
     # Configure save queries
-    set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "$savequeries"
+    if ! set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "$savequeries"; then
+        echo -e "${RED}Failed to set SAVEQUERIES${NC}" >&2
+        success=false
+    fi
     
-    echo -e "${GREEN}WordPress debugging enabled successfully!${NC}"
-    echo -e "${YELLOW}Configuration applied:${NC}"
-    echo -e "  WP_DEBUG: true"
-    echo -e "  WP_DEBUG_LOG: " $([ -n "$debug_log_path" ] && echo "'$debug_log_path'" || echo "true")
-    echo -e "  WP_DEBUG_DISPLAY: $debug_display"
-    echo -e "  SCRIPT_DEBUG: $script_debug"
-    echo -e "  SAVEQUERIES: $savequeries"
-    
-    echo -e "${YELLOW}You can check the status with:${NC}"
-    echo -e "  ${CYAN}shellbe wpd $profile status${NC}"
+    if [ "$success" = true ]; then
+        echo -e "${GREEN}WordPress debugging enabled successfully!${NC}"
+        echo -e "${YELLOW}Configuration applied:${NC}"
+        echo -e "  WP_DEBUG: true"
+        echo -e "  WP_DEBUG_LOG: " $([ -n "$debug_log_path" ] && echo "'$debug_log_path'" || echo "true")
+        echo -e "  WP_DEBUG_DISPLAY: $debug_display"
+        echo -e "  SCRIPT_DEBUG: $script_debug"
+        echo -e "  SAVEQUERIES: $savequeries"
+        
+        echo -e "${YELLOW}You can check the status with:${NC}"
+        echo -e "  ${CYAN}shellbe wpd $profile status${NC}"
+    else
+        echo -e "${RED}Some debugging options could not be enabled${NC}"
+    fi
     
     return 0
 }
@@ -979,6 +1283,12 @@ enable_debugging() {
 disable_debugging() {
     local profile="$1"
     shift
+    
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -1016,24 +1326,62 @@ disable_debugging() {
         wp_config_path="$custom_path"
     fi
     
+    # Verify wp_config_path exists and is accessible
+    if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+        echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
+        return 1
+    }
+    
     echo -e "${BLUE}Disabling WordPress debugging on $profile...${NC}"
     echo -e "${YELLOW}Path: $wp_config_path${NC}"
     
     # Create backup if configured
     if [ "$BACKUP_BEFORE_CHANGES" = "true" ]; then
-        create_config_backup "$profile" "$wp_config_path"
+        if ! create_config_backup "$profile" "$wp_config_path"; then
+            echo -e "${RED}Warning: Failed to create backup of wp-config.php${NC}" >&2
+            read -p "Continue without backup? (y/n): " continue_without_backup
+            if [[ "$continue_without_backup" != "y" && "$continue_without_backup" != "Y" ]]; then
+                echo -e "${YELLOW}Debugging not disabled.${NC}"
+                return 1
+            }
+        fi
     fi
     
     # Disable debugging
-    set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "false"
-    set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "false"
-    set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "false"
-    set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "false"
-    set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "false"
+    local success=true
     
-    echo -e "${GREEN}WordPress debugging disabled successfully!${NC}"
-    echo -e "${YELLOW}You can verify with:${NC}"
-    echo -e "  ${CYAN}shellbe wpd $profile status${NC}"
+    if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG" "false"; then
+        echo -e "${RED}Failed to disable WP_DEBUG${NC}" >&2
+        success=false
+    fi
+    
+    if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG" "false"; then
+        echo -e "${RED}Failed to disable WP_DEBUG_LOG${NC}" >&2
+        success=false
+    fi
+    
+    if ! set_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_DISPLAY" "false"; then
+        echo -e "${RED}Failed to disable WP_DEBUG_DISPLAY${NC}" >&2
+        success=false
+    fi
+    
+    if ! set_debug_setting "$profile" "$wp_config_path" "SCRIPT_DEBUG" "false"; then
+        echo -e "${RED}Failed to disable SCRIPT_DEBUG${NC}" >&2
+        success=false
+    fi
+    
+    if ! set_debug_setting "$profile" "$wp_config_path" "SAVEQUERIES" "false"; then
+        echo -e "${RED}Failed to disable SAVEQUERIES${NC}" >&2
+        success=false
+    fi
+    
+    if [ "$success" = true ]; then
+        echo -e "${GREEN}WordPress debugging disabled successfully!${NC}"
+        echo -e "${YELLOW}You can verify with:${NC}"
+        echo -e "  ${CYAN}shellbe wpd $profile status${NC}"
+    else
+        echo -e "${RED}Some debugging options could not be disabled${NC}"
+    fi
     
     return 0
 }
@@ -1042,6 +1390,12 @@ disable_debugging() {
 view_debug_log() {
     local profile="$1"
     shift
+    
+    # Validate input
+    if [ -z "$profile" ]; then
+        echo -e "${RED}Error: No profile specified${NC}" >&2
+        return 1
+    }
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -1072,6 +1426,12 @@ view_debug_log() {
         shift
     done
     
+    # Validate log_limit is a number
+    if ! [[ "$log_limit" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Invalid log limit: $log_limit. Using default: $DEBUG_LOG_LIMIT${NC}" >&2
+        log_limit="$DEBUG_LOG_LIMIT"
+    fi
+    
     # If path is not provided and no custom log path, try to get default path
     if [ -z "$custom_path" ] && [ -z "$wp_config_path" ] && [ -z "$custom_log_path" ]; then
         wp_config_path=$(get_default_wp_installation "$profile")
@@ -1091,8 +1451,15 @@ view_debug_log() {
     local log_file=""
     
     if [ -n "$custom_log_path" ]; then
-        log_file="$custom_log_path"
-    else
+        # Sanitize the custom log path
+        log_file=$(echo "$custom_log_path" | tr -d ';&|$()')
+    elif [ -n "$wp_config_path" ]; then
+        # Verify wp_config_path exists and is accessible
+        if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+            echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
+            return 1
+        }
+        
         # Try to find log file path from wp-config.php
         local debug_log=$(get_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG")
         
@@ -1104,6 +1471,9 @@ view_debug_log() {
             local wp_content_dir=$(dirname "$wp_config_path")/wp-content
             log_file="$wp_content_dir/debug.log"
         fi
+    else
+        echo -e "${RED}Error: No log file path specified${NC}" >&2
+        return 1
     fi
     
     echo -e "${BLUE}Viewing WordPress debug log on $profile...${NC}"
@@ -1119,8 +1489,8 @@ view_debug_log() {
     fi
     
     # Get log file size
-    local log_size=$(shellbe_ssh_command "$profile" "ls -lh \"$log_file\" | awk '{print \$5}'")
-    local log_lines=$(shellbe_ssh_command "$profile" "wc -l \"$log_file\" | awk '{print \$1}'")
+    local log_size=$(shellbe_ssh_command "$profile" "ls -lh \"$log_file\" 2>/dev/null | awk '{print \$5}' || echo 'unknown'")
+    local log_lines=$(shellbe_ssh_command "$profile" "wc -l \"$log_file\" 2>/dev/null | awk '{print \$1}' || echo 'unknown'")
     
     echo -e "${BLUE}Log file size: $log_size, Lines: $log_lines${NC}"
     
@@ -1134,6 +1504,12 @@ view_debug_log() {
     
     local log_option
     read -p "Enter option (1-5): " log_option
+    
+    # Validate input
+    if [[ ! "$log_option" =~ ^[0-9]+$ ]] || [ "$log_option" -lt 1 ] || [ "$log_option" -gt 5 ]; then
+        echo -e "${RED}Invalid option${NC}"
+        return 1
+    }
     
     case "$log_option" in
         1)
@@ -1158,6 +1534,12 @@ view_debug_log() {
             
             local error_option
             read -p "Enter option (1-5): " error_option
+            
+            # Validate input
+            if [[ ! "$error_option" =~ ^[0-9]+$ ]] || [ "$error_option" -lt 1 ] || [ "$error_option" -gt 5 ]; then
+                echo -e "${RED}Invalid option${NC}"
+                return 1
+            }
             
             local grep_pattern=""
             case "$error_option" in
@@ -1195,8 +1577,11 @@ view_debug_log() {
         4)
             read -p "Are you sure you want to clear the log file? (y/n): " confirm_clear
             if [[ "$confirm_clear" == "y" || "$confirm_clear" == "Y" ]]; then
-                shellbe_ssh_command "$profile" "> \"$log_file\""
-                echo -e "${GREEN}Log file cleared.${NC}"
+                if shellbe_ssh_command "$profile" "> \"$log_file\""; then
+                    echo -e "${GREEN}Log file cleared.${NC}"
+                else
+                    echo -e "${RED}Failed to clear log file. Check permissions.${NC}"
+                }
             else
                 echo -e "${YELLOW}Log file not cleared.${NC}"
             fi
@@ -1228,51 +1613,103 @@ configure_plugin() {
     
     read -p "Enter option number to change (1-6): " option
     
+    # Validate input
+    if [[ ! "$option" =~ ^[0-9]+$ ]] || [ "$option" -lt 1 ] || [ "$option" -gt 6 ]; then
+        echo -e "${RED}Invalid option${NC}"
+        configure_plugin  # Recursive call
+        return 0
+    }
+    
     case "$option" in
         1)
             read -p "Enter new default search paths (comma-separated): " new_paths
-            sed -i "s/^default_search_paths=.*/default_search_paths=$new_paths/" "$CONFIG_FILE"
-            echo -e "${GREEN}Default search paths updated.${NC}"
-            # Reload configuration
-            DEFAULT_SEARCH_PATHS=$(grep "^default_search_paths=" "$CONFIG_FILE" | cut -d= -f2)
+            # Sanitize paths for security
+            new_paths=$(echo "$new_paths" | tr -d ';&|$()')
+            if sed -i "s|^default_search_paths=.*|default_search_paths=$new_paths|" "$CONFIG_FILE"; then
+                echo -e "${GREEN}Default search paths updated.${NC}"
+                # Reload configuration
+                DEFAULT_SEARCH_PATHS=$(grep "^default_search_paths=" "$CONFIG_FILE" | cut -d= -f2)
+            else
+                echo -e "${RED}Failed to update default search paths${NC}"
+            fi
             ;;
         2)
             read -p "Enter new maximum search depth: " new_depth
-            sed -i "s/^max_search_depth=.*/max_search_depth=$new_depth/" "$CONFIG_FILE"
-            echo -e "${GREEN}Maximum search depth updated.${NC}"
-            # Reload configuration
-            MAX_SEARCH_DEPTH=$(grep "^max_search_depth=" "$CONFIG_FILE" | cut -d= -f2)
+            # Validate depth is a number
+            if ! [[ "$new_depth" =~ ^[0-9]+$ ]]; then
+                echo -e "${RED}Invalid depth value. Must be a positive number.${NC}"
+            elif sed -i "s/^max_search_depth=.*/max_search_depth=$new_depth/" "$CONFIG_FILE"; then
+                echo -e "${GREEN}Maximum search depth updated.${NC}"
+                # Reload configuration
+                MAX_SEARCH_DEPTH=$(grep "^max_search_depth=" "$CONFIG_FILE" | cut -d= -f2)
+            else
+                echo -e "${RED}Failed to update maximum search depth${NC}"
+            fi
             ;;
         3)
             read -p "Backup before changes? (true/false): " new_backup
-            sed -i "s/^backup_before_changes=.*/backup_before_changes=$new_backup/" "$CONFIG_FILE"
-            echo -e "${GREEN}Backup setting updated.${NC}"
-            # Reload configuration
-            BACKUP_BEFORE_CHANGES=$(grep "^backup_before_changes=" "$CONFIG_FILE" | cut -d= -f2)
+            # Validate backup is true or false
+            if [ "$new_backup" != "true" ] && [ "$new_backup" != "false" ]; then
+                echo -e "${RED}Invalid value. Must be 'true' or 'false'.${NC}"
+            elif sed -i "s/^backup_before_changes=.*/backup_before_changes=$new_backup/" "$CONFIG_FILE"; then
+                echo -e "${GREEN}Backup setting updated.${NC}"
+                # Reload configuration
+                BACKUP_BEFORE_CHANGES=$(grep "^backup_before_changes=" "$CONFIG_FILE" | cut -d= -f2)
+            else
+                echo -e "${RED}Failed to update backup setting${NC}"
+            fi
             ;;
         4)
             read -p "Enter new debug log limit: " new_limit
-            sed -i "s/^debug_log_limit=.*/debug_log_limit=$new_limit/" "$CONFIG_FILE"
-            echo -e "${GREEN}Debug log limit updated.${NC}"
-            # Reload configuration
-            DEBUG_LOG_LIMIT=$(grep "^debug_log_limit=" "$CONFIG_FILE" | cut -d= -f2)
+            # Validate limit is a number
+            if ! [[ "$new_limit" =~ ^[0-9]+$ ]]; then
+                echo -e "${RED}Invalid limit value. Must be a positive number.${NC}"
+            elif sed -i "s/^debug_log_limit=.*/debug_log_limit=$new_limit/" "$CONFIG_FILE"; then
+                echo -e "${GREEN}Debug log limit updated.${NC}"
+                # Reload configuration
+                DEBUG_LOG_LIMIT=$(grep "^debug_log_limit=" "$CONFIG_FILE" | cut -d= -f2)
+            else
+                echo -e "${RED}Failed to update debug log limit${NC}"
+            fi
             ;;
         5)
             read -p "Are you sure you want to reset all saved WordPress paths? (y/n): " confirm_reset
             if [[ "$confirm_reset" == "y" || "$confirm_reset" == "Y" ]]; then
                 # Backup the files first
+                backup_dir="$PLUGIN_DIR/backup_$(date +%Y%m%d%H%M%S)"
+                mkdir -p "$backup_dir" || {
+                    echo -e "${RED}Error: Failed to create backup directory${NC}" >&2
+                    configure_plugin  # Recursive call
+                    return 0
+                }
+                
                 if [ -f "$WP_PATHS_FILE" ]; then
-                    cp "$WP_PATHS_FILE" "$WP_PATHS_FILE.backup.$(date '+%Y%m%d%H%M%S')"
+                    cp "$WP_PATHS_FILE" "$backup_dir/wp_paths.ini.backup.$(date '+%Y%m%d%H%M%S')" || {
+                        echo -e "${YELLOW}Warning: Failed to backup WordPress paths file${NC}" >&2
+                    }
                 fi
+                
                 if [ -f "$DEFAULT_CONFIG_FILE" ]; then
-                    cp "$DEFAULT_CONFIG_FILE" "$DEFAULT_CONFIG_FILE.backup.$(date '+%Y%m%d%H%M%S')"
+                    cp "$DEFAULT_CONFIG_FILE" "$backup_dir/default_wp.ini.backup.$(date '+%Y%m%d%H%M%S')" || {
+                        echo -e "${YELLOW}Warning: Failed to backup default WordPress config file${NC}" >&2
+                    }
                 fi
                 
                 # Reset files
-                > "$WP_PATHS_FILE"
-                > "$DEFAULT_CONFIG_FILE"
+                > "$WP_PATHS_FILE" || {
+                    echo -e "${RED}Error: Failed to reset WordPress paths file${NC}" >&2
+                    configure_plugin  # Recursive call
+                    return 0
+                }
+                
+                > "$DEFAULT_CONFIG_FILE" || {
+                    echo -e "${RED}Error: Failed to reset default WordPress config file${NC}" >&2
+                    configure_plugin  # Recursive call
+                    return 0
+                }
                 
                 echo -e "${GREEN}All saved WordPress paths have been reset.${NC}"
+                echo -e "${GREEN}Backups saved to: $backup_dir${NC}"
             else
                 echo -e "${YELLOW}Reset cancelled.${NC}"
             fi
@@ -1324,15 +1761,23 @@ main() {
         interactive_mode
         return $?
     elif [ $# -eq 1 ]; then
-        # One argument - server-specific interactive mode
+        # One argument - server-specific interactive mode or help
         local profile="$1"
+        
+        # Check if the argument is a help flag
+        if [ "$profile" = "help" ] || [ "$profile" = "--help" ] || [ "$profile" = "-h" ]; then
+            show_usage
+            return 0
+        }
         
         # Check if the profile exists
         if ! check_shellbe_profile "$profile"; then
             echo -e "${RED}Server profile '$profile' not found.${NC}"
             echo -e "${YELLOW}Available profiles:${NC}"
             get_shellbe_profiles | while read -r server; do
-                echo -e "${CYAN}- $server${NC}"
+                if [ -n "$server" ]; then  # Skip empty lines
+                    echo -e "${CYAN}- $server${NC}"
+                fi
             done
             return 1
         fi
@@ -1356,7 +1801,9 @@ main() {
             echo -e "${RED}Server profile '$profile' not found.${NC}"
             echo -e "${YELLOW}Available profiles:${NC}"
             get_shellbe_profiles | while read -r server; do
-                echo -e "${CYAN}- $server${NC}"
+                if [ -n "$server" ]; then  # Skip empty lines
+                    echo -e "${CYAN}- $server${NC}"
+                fi
             done
             return 1
         fi

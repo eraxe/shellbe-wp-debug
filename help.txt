@@ -1,10 +1,35 @@
-find [--search=<paths>] [--depth=<number>] [--save-path]                     Find WordPress installations
-list                                                                         List WordPress installations
-status [--path=<path>]                                                       Check debugging status
-enable [--path=<path>] [--display=<true|false>] [--script-debug=<true|false>] Enable debugging
-disable [--path=<path>]                                                      Disable debugging
-log [--path=<path>] [--debug-log=<path>] [--limit=<lines>]                   View debug log
-configure [--path=<path>]                                                    Configure debugging settings
-default                                                                      Set default WordPress installation
-config                                                                       Configure plugin settings
-help                                                                         Show help message
+WordPress Debug Plugin v1.1.0 - Help
+
+USAGE:
+  shellbe wpd                                   Interactive mode
+  shellbe wpd <profile>                         Interactive mode for specific server
+  shellbe wpd <profile> <command> [options]     Direct command execution
+
+COMMANDS:
+  find [--search=<paths>] [--depth=<number>] [--save-path]            Find WordPress installations
+  list                                                                 List WordPress installations
+  status [--path=<path>]                                              Check debugging status
+  enable [--path=<path>] [--display=<bool>] [--script-debug=<bool>]   Enable debugging
+  disable [--path=<path>]                                             Disable debugging
+  log [--path=<path>] [--debug-log=<path>] [--limit=<lines>]          View debug log
+  configure [--path=<path>]                                           Configure debugging settings
+  default                                                             Set default WordPress installation
+  config                                                              Configure plugin settings
+  help                                                                Show this help message
+
+OPTIONS:
+  --path=<path>                   Specify path to wp-config.php
+  --search=<paths>                Comma-separated list of paths to search
+  --depth=<number>                Maximum search depth
+  --save-path                     Save found path for future use
+  --debug-log=<path>              Specify custom debug log path
+  --limit=<lines>                 Limit log output to specified lines
+  --display=<true|false>          Set WP_DEBUG_DISPLAY
+  --script-debug=<true|false>     Set SCRIPT_DEBUG
+  --savequeries=<true|false>      Set SAVEQUERIES
+
+EXAMPLES:
+  shellbe wpd myserver find --search=/var/www,/home --depth=4
+  shellbe wpd myserver status
+  shellbe wpd myserver enable --display=false
+  shellbe wpd myserver log --limit=100

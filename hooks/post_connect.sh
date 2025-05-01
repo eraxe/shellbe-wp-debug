@@ -17,6 +17,12 @@ USER="$3"
 PORT="$4"
 EXIT_CODE="$5"
 
+# Validate required arguments
+if [ -z "$PROFILE_NAME" ]; then
+    echo -e "\033[0;31m[WP-DEBUG Error]\033[0m Missing profile name" >&2
+    exit 1
+fi
+
 # Only proceed if the connection was successful
 if [ "$EXIT_CODE" -eq 0 ]; then
     # Check if WordPress path is saved for this profile
@@ -32,10 +38,10 @@ if [ "$EXIT_CODE" -eq 0 ]; then
             LOG_PATH=$(get_debug_log_path "$PROFILE_NAME" "$DEFAULT_WP_PATH")
             
             # Check if there are new entries in the log
-            CHECK_CMD="[ -f \"$LOG_PATH\" ] && stat -c %s \"$LOG_PATH\" || echo '0'"
+            CHECK_CMD="[ -f \"$LOG_PATH\" ] && stat -c %s \"$LOG_PATH\" 2>/dev/null || echo '0'"
             LOG_SIZE=$(shellbe_ssh_command "$PROFILE_NAME" "$CHECK_CMD")
             
-            if [ "$LOG_SIZE" -gt 0 ]; then
+            if [ "$LOG_SIZE" -gt 0 ] 2>/dev/null; then
                 echo -e "\033[0;33m[WP-DEBUG]\033[0m WordPress debug log has entries. View with:"
                 echo -e "\033[0;36mshellbe wpd $PROFILE_NAME log\033[0m"
             fi
@@ -55,11 +61,13 @@ if [ "$EXIT_CODE" -eq 0 ]; then
             PROD_DEBUG_ENABLED=false
             
             while IFS= read -r WP_PATH; do
-                DEBUG_STATUS=$(get_debug_setting "$PROFILE_NAME" "$WP_PATH" "WP_DEBUG")
-                
-                if [ "$DEBUG_STATUS" = "true" ] && is_production_site "$PROFILE_NAME" "$WP_PATH"; then
-                    PROD_DEBUG_ENABLED=true
-                    break
+                if [ -n "$WP_PATH" ]; then  # Skip empty lines
+                    DEBUG_STATUS=$(get_debug_setting "$PROFILE_NAME" "$WP_PATH" "WP_DEBUG")
+                    
+                    if [ "$DEBUG_STATUS" = "true" ] && is_production_site "$PROFILE_NAME" "$WP_PATH"; then
+                        PROD_DEBUG_ENABLED=true
+                        break
+                    fi
                 fi
             done <<< "$WP_INSTALLATIONS"
             
@@ -71,12 +79,20 @@ if [ "$EXIT_CODE" -eq 0 ]; then
     fi
     
     # Check if we have any newly discovered WordPress installations
-    if ! [ -f "$PLUGIN_DIR/.last_check_$PROFILE_NAME" ]; then
-        touch "$PLUGIN_DIR/.last_check_$PROFILE_NAME"
+    LAST_CHECK_FILE="$PLUGIN_DIR/.last_check_$PROFILE_NAME"
+    
+    if ! [ -f "$LAST_CHECK_FILE" ]; then
+        touch "$LAST_CHECK_FILE" || {
+            echo -e "\033[0;31m[WP-DEBUG Error]\033[0m Failed to create check file" >&2
+            exit 1
+        }
     fi
     
-    # Get last check time
-    LAST_CHECK=$(stat -c %Y "$PLUGIN_DIR/.last_check_$PROFILE_NAME")
+    # Get last check time, with error handling
+    if ! LAST_CHECK=$(stat -c %Y "$LAST_CHECK_FILE" 2>/dev/null); then
+        LAST_CHECK=0
+    fi
+    
     CURRENT_TIME=$(date +%s)
     
     # Only check for new WordPress installations every 7 days
@@ -84,29 +100,53 @@ if [ "$EXIT_CODE" -eq 0 ]; then
         echo -e "\033[0;33m[WP-DEBUG]\033[0m Checking for new WordPress installations..."
         
         # Get current installations
-        CURRENT_WP=$(get_wp_installations "$PROFILE_NAME" | wc -l)
+        CURRENT_WP_COUNT=0
+        CURRENT_WP=$(get_wp_installations "$PROFILE_NAME")
+        
+        if [ -n "$CURRENT_WP" ]; then
+            CURRENT_WP_COUNT=$(echo "$CURRENT_WP" | wc -l)
+        fi
         
         # Find new installations
-        DEFAULT_SEARCH_PATHS=$(grep "^default_search_paths=" "$PLUGIN_DIR/config.ini" | cut -d= -f2)
-        MAX_SEARCH_DEPTH=$(grep "^max_search_depth=" "$PLUGIN_DIR/config.ini" | cut -d= -f2)
+        CONFIG_FILE="$PLUGIN_DIR/config.ini"
+        DEFAULT_SEARCH_PATHS="/var/www/html,/srv/www,/home"
+        MAX_SEARCH_DEPTH=5
+        
+        if [ -f "$CONFIG_FILE" ]; then
+            DEFAULT_SEARCH_PATHS=$(grep "^default_search_paths=" "$CONFIG_FILE" | cut -d= -f2)
+            MAX_SEARCH_DEPTH=$(grep "^max_search_depth=" "$CONFIG_FILE" | cut -d= -f2)
+        fi
         
         if [ -z "$DEFAULT_SEARCH_PATHS" ]; then
             DEFAULT_SEARCH_PATHS="/var/www/html,/srv/www,/home"
         fi
         
-        if [ -z "$MAX_SEARCH_DEPTH" ]; then
+        if [ -z "$MAX_SEARCH_DEPTH" ] || ! [[ "$MAX_SEARCH_DEPTH" =~ ^[0-9]+$ ]]; then
             MAX_SEARCH_DEPTH=5
         fi
         
-        NEW_WP=$(shellbe_ssh_command "$PROFILE_NAME" "find $DEFAULT_SEARCH_PATHS -type f -name wp-config.php -maxdepth $MAX_SEARCH_DEPTH 2>/dev/null" | wc -l)
+        # Safely sanitize search paths to prevent command injection
+        DEFAULT_SEARCH_PATHS=$(echo "$DEFAULT_SEARCH_PATHS" | tr -d ';&|$()')
         
-        if [ "$NEW_WP" -gt "$CURRENT_WP" ]; then
-            echo -e "\033[0;33m[WP-DEBUG]\033[0m Found $(($NEW_WP - $CURRENT_WP)) new WordPress installation(s)!"
+        # Try to count new installations
+        NEW_WP_CMD="find $DEFAULT_SEARCH_PATHS -type f -name wp-config.php -maxdepth $MAX_SEARCH_DEPTH 2>/dev/null | wc -l"
+        NEW_WP=$(shellbe_ssh_command "$PROFILE_NAME" "$NEW_WP_CMD")
+        
+        # Handle potential errors
+        if ! [[ "$NEW_WP" =~ ^[0-9]+$ ]]; then
+            NEW_WP=0
+        fi
+        
+        if [ "$NEW_WP" -gt "$CURRENT_WP_COUNT" ]; then
+            echo -e "\033[0;33m[WP-DEBUG]\033[0m Found $(($NEW_WP - $CURRENT_WP_COUNT)) new WordPress installation(s)!"
             echo -e "\033[0;33m[WP-DEBUG]\033[0m Use 'shellbe wpd $PROFILE_NAME find' to update your installation list"
         fi
         
         # Update check time
-        touch "$PLUGIN_DIR/.last_check_$PROFILE_NAME"
+        touch "$LAST_CHECK_FILE" || {
+            echo -e "\033[0;31m[WP-DEBUG Error]\033[0m Failed to update check file" >&2
+            exit 1
+        }
     fi
 fi
 
