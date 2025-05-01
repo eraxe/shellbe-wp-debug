@@ -41,7 +41,7 @@ if [ -n "$WP_INSTALLATIONS" ]; then
         WP_VERSION=$(get_wp_version "$PROFILE_NAME" "$DEFAULT_WP_PATH")
         echo -e "\033[0;36mWP Version:${NC}\t$WP_VERSION"
         
-        # Try to get site name
+        # Try to get site name using the template
         SITE_NAME=$(get_wp_site_name "$PROFILE_NAME" "$DEFAULT_WP_PATH")
         if [ -n "$SITE_NAME" ] && [[ ! "$SITE_NAME" =~ ^Error: ]]; then
             echo -e "\033[0;36mSite Name:${NC}\t$SITE_NAME"
@@ -56,10 +56,38 @@ if [ -n "$WP_INSTALLATIONS" ]; then
             
             if [ "$DEBUG_LOG" = "true" ] || [[ "$DEBUG_LOG" =~ ^[\"\']/.*[\"\']$ ]]; then
                 LOG_PATH=$(get_debug_log_path "$PROFILE_NAME" "$DEFAULT_WP_PATH")
-                LOG_EXISTS=$(shellbe_ssh_command "$PROFILE_NAME" "[ -f \"$LOG_PATH\" ] && echo 'yes' || echo 'no'")
+                
+                # Create a temporary script to check if log exists and get its size
+                local log_script="/tmp/wpd_check_log_${RANDOM}.sh"
+                cat > "$log_script" << EOF
+#!/bin/bash
+if [ -f "$LOG_PATH" ]; then
+    echo "yes"
+    ls -lh "$LOG_PATH" 2>/dev/null | awk '{print \$5}' || echo 'unknown'
+else
+    echo "no"
+    echo "unknown"
+fi
+EOF
+                chmod +x "$log_script"
+                
+                # Copy script to remote server
+                local remote_log_script="/tmp/wpd_check_log_${RANDOM}.sh"
+                shellbe_ssh_command "$PROFILE_NAME" "cat > \"$remote_log_script\"" < "$log_script"
+                shellbe_ssh_command "$PROFILE_NAME" "chmod +x \"$remote_log_script\"" > /dev/null 2>&1
+                
+                # Execute the script on the remote server
+                local result=$(shellbe_ssh_command "$PROFILE_NAME" "bash \"$remote_log_script\"")
+                
+                # Clean up temporary files
+                rm -f "$log_script"
+                shellbe_ssh_command "$PROFILE_NAME" "rm -f \"$remote_log_script\"" > /dev/null 2>&1
+                
+                # Parse results (first line is yes/no, second line is size)
+                LOG_EXISTS=$(echo "$result" | head -n 1)
+                LOG_SIZE=$(echo "$result" | tail -n 1)
                 
                 if [ "$LOG_EXISTS" = "yes" ]; then
-                    LOG_SIZE=$(shellbe_ssh_command "$PROFILE_NAME" "ls -lh \"$LOG_PATH\" 2>/dev/null | awk '{print \$5}' || echo 'unknown'")
                     echo -e "\033[0;36mDebug Log:${NC}\t$LOG_PATH ($LOG_SIZE)"
                 else
                     echo -e "\033[0;36mDebug Log:${NC}\t$LOG_PATH (not created yet)"

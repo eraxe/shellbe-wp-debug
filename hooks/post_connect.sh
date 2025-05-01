@@ -37,9 +37,29 @@ if [ "$EXIT_CODE" -eq 0 ]; then
             # Get log path
             LOG_PATH=$(get_debug_log_path "$PROFILE_NAME" "$DEFAULT_WP_PATH")
             
-            # Check if there are new entries in the log
-            CHECK_CMD="[ -f \"$LOG_PATH\" ] && stat -c %s \"$LOG_PATH\" 2>/dev/null || echo '0'"
-            LOG_SIZE=$(shellbe_ssh_command "$PROFILE_NAME" "$CHECK_CMD")
+            # Create a temporary script to check log size
+            local temp_script="/tmp/wpd_check_log_size_${RANDOM}.sh"
+            cat > "$temp_script" << EOF
+#!/bin/bash
+if [ -f "$LOG_PATH" ]; then
+    stat -c %s "$LOG_PATH" 2>/dev/null || echo '0'
+else
+    echo '0'
+fi
+EOF
+            chmod +x "$temp_script"
+            
+            # Copy script to remote server
+            local remote_script="/tmp/wpd_check_log_size_${RANDOM}.sh"
+            shellbe_ssh_command "$PROFILE_NAME" "cat > \"$remote_script\"" < "$temp_script"
+            shellbe_ssh_command "$PROFILE_NAME" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+            
+            # Execute the script on the remote server
+            LOG_SIZE=$(shellbe_ssh_command "$PROFILE_NAME" "bash \"$remote_script\"")
+            
+            # Clean up temporary files
+            rm -f "$temp_script"
+            shellbe_ssh_command "$PROFILE_NAME" "rm -f \"$remote_script\"" > /dev/null 2>&1
             
             if [ "$LOG_SIZE" -gt 0 ] 2>/dev/null; then
                 echo -e "\033[0;33m[WP-DEBUG]\033[0m WordPress debug log has entries. View with:"
@@ -128,9 +148,25 @@ if [ "$EXIT_CODE" -eq 0 ]; then
         # Safely sanitize search paths to prevent command injection
         DEFAULT_SEARCH_PATHS=$(echo "$DEFAULT_SEARCH_PATHS" | tr -d ';&|$()')
         
-        # Try to count new installations
-        NEW_WP_CMD="find $DEFAULT_SEARCH_PATHS -type f -name wp-config.php -maxdepth $MAX_SEARCH_DEPTH 2>/dev/null | wc -l"
-        NEW_WP=$(shellbe_ssh_command "$PROFILE_NAME" "$NEW_WP_CMD")
+        # Create a temporary script to count WordPress installations
+        local count_script="/tmp/wpd_count_wp_${RANDOM}.sh"
+        cat > "$count_script" << EOF
+#!/bin/bash
+find $DEFAULT_SEARCH_PATHS -type f -name wp-config.php -maxdepth $MAX_SEARCH_DEPTH 2>/dev/null | wc -l
+EOF
+        chmod +x "$count_script"
+        
+        # Copy script to remote server
+        local remote_count_script="/tmp/wpd_count_wp_${RANDOM}.sh"
+        shellbe_ssh_command "$PROFILE_NAME" "cat > \"$remote_count_script\"" < "$count_script"
+        shellbe_ssh_command "$PROFILE_NAME" "chmod +x \"$remote_count_script\"" > /dev/null 2>&1
+        
+        # Execute the script on the remote server
+        NEW_WP=$(shellbe_ssh_command "$PROFILE_NAME" "bash \"$remote_count_script\"")
+        
+        # Clean up temporary files
+        rm -f "$count_script"
+        shellbe_ssh_command "$PROFILE_NAME" "rm -f \"$remote_count_script\"" > /dev/null 2>&1
         
         # Handle potential errors
         if ! [[ "$NEW_WP" =~ ^[0-9]+$ ]]; then

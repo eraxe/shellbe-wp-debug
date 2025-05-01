@@ -17,6 +17,16 @@ source "$PLUGIN_DIR/lib.sh" || {
 CONFIG_FILE="$PLUGIN_DIR/config.ini"
 DEFAULT_CONFIG_FILE="$PLUGIN_DIR/default_wp.ini"
 WP_PATHS_FILE="$PLUGIN_DIR/wp_paths.ini"
+TEMPLATES_DIR="$PLUGIN_DIR/templates"
+
+# Create templates directory if it doesn't exist
+if [ ! -d "$TEMPLATES_DIR" ]; then
+    mkdir -p "$TEMPLATES_DIR/php" || {
+        echo -e "${RED}Error: Failed to create templates directory${NC}" >&2
+        exit 1
+    }
+    chmod 755 "$TEMPLATES_DIR" "$TEMPLATES_DIR/php"
+}
 
 # Initialize configuration if it doesn't exist
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -498,17 +508,32 @@ find_wp_config() {
     echo -e "${BLUE}Searching for WordPress configuration files on $profile...${NC}"
     echo -e "${YELLOW}This may take a while depending on the server size...${NC}"
     
-    # Build the find command
-    local find_cmd="find $search_paths -type f -name wp-config.php -maxdepth $search_depth 2>/dev/null"
+    # Create a temporary script for the find operation
+    local find_script="/tmp/wpd_find_wp_${RANDOM}.sh"
+    cat > "$find_script" << EOF
+#!/bin/bash
+# Safe find command to locate WordPress configurations
+find $search_paths -type f -name wp-config.php -maxdepth $search_depth 2>/dev/null
+EOF
+    chmod +x "$find_script"
     
-    # Run the command on the remote server
-    local results=$(shellbe_ssh_command "$profile" "$find_cmd")
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_find_wp_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$find_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local results=$(shellbe_ssh_command "$profile" "bash \"$remote_script\"")
     local exit_code=$?
+    
+    # Clean up temporary files
+    rm -f "$find_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
     
     if [ $exit_code -ne 0 ]; then
         echo -e "${RED}Error: Failed to search for WordPress installations${NC}" >&2
         return 1
-    }
+    fi
     
     if [ -z "$results" ]; then
         echo -e "${RED}No WordPress configuration files found.${NC}"
@@ -605,11 +630,34 @@ configure_debugging() {
         wp_config_path="$custom_path"
     fi
     
-    # Verify wp_config_path exists and is accessible
-    if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+    # Create a script to check if wp-config.php exists
+    local check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+    cat > "$check_script" << EOF
+#!/bin/bash
+if [ -f "$wp_config_path" ]; then
+    echo "exists"
+else
+    echo "not-exists"
+fi
+EOF
+    chmod +x "$check_script"
+    
+    # Copy script to remote server
+    local remote_check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_check_script\"" < "$check_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_check_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local file_exists=$(shellbe_ssh_command "$profile" "bash \"$remote_check_script\"")
+    
+    # Clean up temporary files
+    rm -f "$check_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_check_script\"" > /dev/null 2>&1
+    
+    if [ "$file_exists" != "exists" ]; then
         echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
         return 1
-    }
+    fi
     
     echo -e "${BLUE}Configure WordPress debugging on $profile...${NC}"
     echo -e "${YELLOW}Path: $wp_config_path${NC}"
@@ -634,7 +682,9 @@ configure_debugging() {
     if [ "$debug_log" = "true" ]; then
         echo -e "${CYAN}2)${NC} WP_DEBUG_LOG: ${GREEN}Enabled${NC} (Default location)"
     elif [[ "$debug_log" =~ ^[\"\']/.*[\"\']$ ]]; then
-        echo -e "${CYAN}2)${NC} WP_DEBUG_LOG: ${GREEN}Enabled${NC} (Custom: $debug_log)"
+        # For display purposes, strip the quotes
+        local log_path="${debug_log:1:${#debug_log}-2}"
+        echo -e "${CYAN}2)${NC} WP_DEBUG_LOG: ${GREEN}Enabled${NC} (Custom: $log_path)"
     else
         echo -e "${CYAN}2)${NC} WP_DEBUG_LOG: ${RED}Disabled${NC}"
     fi
@@ -671,7 +721,7 @@ configure_debugging() {
     if [[ ! "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt 9 ]; then
         echo -e "${RED}Invalid selection${NC}"
         return 1
-    }
+    fi
     
     # Create backup if configured
     if [ "$BACKUP_BEFORE_CHANGES" = "true" ]; then
@@ -977,11 +1027,34 @@ check_debug_status() {
         wp_config_path="$custom_path"
     fi
     
-    # Verify wp_config_path exists and is accessible
-    if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+    # Create a script to check if wp-config.php exists
+    local check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+    cat > "$check_script" << EOF
+#!/bin/bash
+if [ -f "$wp_config_path" ]; then
+    echo "exists"
+else
+    echo "not-exists"
+fi
+EOF
+    chmod +x "$check_script"
+    
+    # Copy script to remote server
+    local remote_check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_check_script\"" < "$check_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_check_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local file_exists=$(shellbe_ssh_command "$profile" "bash \"$remote_check_script\"")
+    
+    # Clean up temporary files
+    rm -f "$check_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_check_script\"" > /dev/null 2>&1
+    
+    if [ "$file_exists" != "exists" ]; then
         echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
         return 1
-    }
+    fi
     
     echo -e "${BLUE}Checking WordPress debugging status on $profile...${NC}"
     echo -e "${YELLOW}Path: $wp_config_path${NC}"
@@ -1010,8 +1083,8 @@ check_debug_status() {
         local log_file=""
         
         if [[ "$debug_log" =~ ^[\"\']/.*[\"\']$ ]]; then
-            # Custom log path
-            log_file=$(echo "$debug_log" | sed 's/["\']//g')
+            # Custom log path - strip the quotes
+            log_file="${debug_log:1:${#debug_log}-2}"
             echo -e "  Log file: $log_file"
         else
             # Default log path
@@ -1020,12 +1093,44 @@ check_debug_status() {
             echo -e "  Log file: $log_file (default)"
         fi
         
-        # Check if log file exists and is writable
-        local log_status=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && echo 'exists' || echo 'not-exists'")
-        local log_writable=$(shellbe_ssh_command "$profile" "[ -w \"$log_file\" ] && echo 'writable' || echo 'not-writable'")
-        local log_size=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && ls -lh \"$log_file\" 2>/dev/null | awk '{print \$5}' || echo 'unknown'")
+        # Create a script to check log file
+        local log_script="/tmp/wpd_check_log_${RANDOM}.sh"
+        cat > "$log_script" << EOF
+#!/bin/bash
+if [ -f "$log_file" ]; then
+  echo "exists"
+  if [ -w "$log_file" ]; then
+    echo "writable"
+  else
+    echo "not-writable"
+  fi
+  ls -lh "$log_file" 2>/dev/null | awk '{print \$5}' || echo 'unknown'
+else
+  echo "not-exists"
+  echo "not-writable"
+  echo "unknown"
+fi
+EOF
+        chmod +x "$log_script"
         
-        if [ "$log_status" = "exists" ]; then
+        # Copy script to remote server
+        local remote_log_script="/tmp/wpd_check_log_${RANDOM}.sh"
+        shellbe_ssh_command "$profile" "cat > \"$remote_log_script\"" < "$log_script"
+        shellbe_ssh_command "$profile" "chmod +x \"$remote_log_script\"" > /dev/null 2>&1
+        
+        # Execute the script on the remote server
+        local log_info=$(shellbe_ssh_command "$profile" "bash \"$remote_log_script\"")
+        
+        # Clean up temporary files
+        rm -f "$log_script"
+        shellbe_ssh_command "$profile" "rm -f \"$remote_log_script\"" > /dev/null 2>&1
+        
+        # Parse results (line 1: exists/not-exists, line 2: writable/not-writable, line 3: size)
+        local log_exists=$(echo "$log_info" | sed -n '1p')
+        local log_writable=$(echo "$log_info" | sed -n '2p')
+        local log_size=$(echo "$log_info" | sed -n '3p')
+        
+        if [ "$log_exists" = "exists" ]; then
             echo -e "  Status: ${GREEN}Exists${NC} (Size: $log_size)"
         else
             echo -e "  Status: ${RED}Does not exist${NC}"
@@ -1038,15 +1143,48 @@ check_debug_status() {
         fi
     elif [[ "$debug_log" =~ ^[\"\']/.*[\"\']$ ]]; then
         echo -e "${GREEN}WP_DEBUG_LOG:${NC} Enabled (Custom path)"
-        local log_file=$(echo "$debug_log" | sed 's/["\']//g')
+        # Strip quotes for display
+        local log_file="${debug_log:1:${#debug_log}-2}"
         echo -e "  Log file: $log_file"
         
-        # Check if log file exists and is writable
-        local log_status=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && echo 'exists' || echo 'not-exists'")
-        local log_writable=$(shellbe_ssh_command "$profile" "[ -w \"$log_file\" ] && echo 'writable' || echo 'not-writable'")
-        local log_size=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && ls -lh \"$log_file\" 2>/dev/null | awk '{print \$5}' || echo 'unknown'")
+        # Create a script to check log file
+        local log_script="/tmp/wpd_check_log_${RANDOM}.sh"
+        cat > "$log_script" << EOF
+#!/bin/bash
+if [ -f "$log_file" ]; then
+  echo "exists"
+  if [ -w "$log_file" ]; then
+    echo "writable"
+  else
+    echo "not-writable"
+  fi
+  ls -lh "$log_file" 2>/dev/null | awk '{print \$5}' || echo 'unknown'
+else
+  echo "not-exists"
+  echo "not-writable"
+  echo "unknown"
+fi
+EOF
+        chmod +x "$log_script"
         
-        if [ "$log_status" = "exists" ]; then
+        # Copy script to remote server
+        local remote_log_script="/tmp/wpd_check_log_${RANDOM}.sh"
+        shellbe_ssh_command "$profile" "cat > \"$remote_log_script\"" < "$log_script"
+        shellbe_ssh_command "$profile" "chmod +x \"$remote_log_script\"" > /dev/null 2>&1
+        
+        # Execute the script on the remote server
+        local log_info=$(shellbe_ssh_command "$profile" "bash \"$remote_log_script\"")
+        
+        # Clean up temporary files
+        rm -f "$log_script"
+        shellbe_ssh_command "$profile" "rm -f \"$remote_log_script\"" > /dev/null 2>&1
+        
+        # Parse results (line 1: exists/not-exists, line 2: writable/not-writable, line 3: size)
+        local log_exists=$(echo "$log_info" | sed -n '1p')
+        local log_writable=$(echo "$log_info" | sed -n '2p')
+        local log_size=$(echo "$log_info" | sed -n '3p')
+        
+        if [ "$log_exists" = "exists" ]; then
             echo -e "  Status: ${GREEN}Exists${NC} (Size: $log_size)"
         else
             echo -e "  Status: ${RED}Does not exist${NC}"
@@ -1178,11 +1316,34 @@ enable_debugging() {
         fi
     fi
     
-    # Verify wp_config_path exists and is accessible
-    if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+    # Create a script to check if wp-config.php exists
+    local check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+    cat > "$check_script" << EOF
+#!/bin/bash
+if [ -f "$wp_config_path" ]; then
+    echo "exists"
+else
+    echo "not-exists"
+fi
+EOF
+    chmod +x "$check_script"
+    
+    # Copy script to remote server
+    local remote_check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_check_script\"" < "$check_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_check_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local file_exists=$(shellbe_ssh_command "$profile" "bash \"$remote_check_script\"")
+    
+    # Clean up temporary files
+    rm -f "$check_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_check_script\"" > /dev/null 2>&1
+    
+    if [ "$file_exists" != "exists" ]; then
         echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
         return 1
-    }
+    fi
     
     echo -e "${BLUE}Enabling WordPress debugging on $profile...${NC}"
     echo -e "${YELLOW}Path: $wp_config_path${NC}"
@@ -1265,7 +1426,11 @@ enable_debugging() {
         echo -e "${GREEN}WordPress debugging enabled successfully!${NC}"
         echo -e "${YELLOW}Configuration applied:${NC}"
         echo -e "  WP_DEBUG: true"
-        echo -e "  WP_DEBUG_LOG: " $([ -n "$debug_log_path" ] && echo "'$debug_log_path'" || echo "true")
+        if [ -n "$debug_log_path" ]; then
+            echo -e "  WP_DEBUG_LOG: '$debug_log_path'"
+        else
+            echo -e "  WP_DEBUG_LOG: true"
+        fi
         echo -e "  WP_DEBUG_DISPLAY: $debug_display"
         echo -e "  SCRIPT_DEBUG: $script_debug"
         echo -e "  SAVEQUERIES: $savequeries"
@@ -1326,11 +1491,34 @@ disable_debugging() {
         wp_config_path="$custom_path"
     fi
     
-    # Verify wp_config_path exists and is accessible
-    if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+    # Create a script to check if wp-config.php exists
+    local check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+    cat > "$check_script" << EOF
+#!/bin/bash
+if [ -f "$wp_config_path" ]; then
+    echo "exists"
+else
+    echo "not-exists"
+fi
+EOF
+    chmod +x "$check_script"
+    
+    # Copy script to remote server
+    local remote_check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_check_script\"" < "$check_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_check_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local file_exists=$(shellbe_ssh_command "$profile" "bash \"$remote_check_script\"")
+    
+    # Clean up temporary files
+    rm -f "$check_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_check_script\"" > /dev/null 2>&1
+    
+    if [ "$file_exists" != "exists" ]; then
         echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
         return 1
-    }
+    fi
     
     echo -e "${BLUE}Disabling WordPress debugging on $profile...${NC}"
     echo -e "${YELLOW}Path: $wp_config_path${NC}"
@@ -1454,18 +1642,41 @@ view_debug_log() {
         # Sanitize the custom log path
         log_file=$(echo "$custom_log_path" | tr -d ';&|$()')
     elif [ -n "$wp_config_path" ]; then
-        # Verify wp_config_path exists and is accessible
-        if ! shellbe_ssh_command "$profile" "[ -f \"$wp_config_path\" ]"; then
+        # Create a script to check if wp-config.php exists
+        local check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+        cat > "$check_script" << EOF
+#!/bin/bash
+if [ -f "$wp_config_path" ]; then
+    echo "exists"
+else
+    echo "not-exists"
+fi
+EOF
+        chmod +x "$check_script"
+        
+        # Copy script to remote server
+        local remote_check_script="/tmp/wpd_check_config_${RANDOM}.sh"
+        shellbe_ssh_command "$profile" "cat > \"$remote_check_script\"" < "$check_script"
+        shellbe_ssh_command "$profile" "chmod +x \"$remote_check_script\"" > /dev/null 2>&1
+        
+        # Execute the script on the remote server
+        local file_exists=$(shellbe_ssh_command "$profile" "bash \"$remote_check_script\"")
+        
+        # Clean up temporary files
+        rm -f "$check_script"
+        shellbe_ssh_command "$profile" "rm -f \"$remote_check_script\"" > /dev/null 2>&1
+        
+        if [ "$file_exists" != "exists" ]; then
             echo -e "${RED}Error: WordPress configuration file not found or not accessible at: $wp_config_path${NC}" >&2
             return 1
-        }
+        fi
         
         # Try to find log file path from wp-config.php
         local debug_log=$(get_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG")
         
         if [[ "$debug_log" =~ ^[\"\']/.*[\"\']$ ]]; then
-            # Custom log path in config
-            log_file=$(echo "$debug_log" | sed 's/["\']//g')
+            # Custom log path in config - strip the quotes
+            log_file="${debug_log:1:${#debug_log}-2}"
         else
             # Default log path
             local wp_content_dir=$(dirname "$wp_config_path")/wp-content
@@ -1479,8 +1690,29 @@ view_debug_log() {
     echo -e "${BLUE}Viewing WordPress debug log on $profile...${NC}"
     echo -e "${YELLOW}Log file: $log_file${NC}"
     
-    # Check if log file exists
-    local log_exists=$(shellbe_ssh_command "$profile" "[ -f \"$log_file\" ] && echo 'exists' || echo 'not-exists'")
+    # Create a script to check if log file exists
+    local log_exists_script="/tmp/wpd_check_log_${RANDOM}.sh"
+    cat > "$log_exists_script" << EOF
+#!/bin/bash
+if [ -f "$log_file" ]; then
+    echo "exists"
+else
+    echo "not-exists"
+fi
+EOF
+    chmod +x "$log_exists_script"
+    
+    # Copy script to remote server
+    local remote_log_exists_script="/tmp/wpd_check_log_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_log_exists_script\"" < "$log_exists_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_log_exists_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local log_exists=$(shellbe_ssh_command "$profile" "bash \"$remote_log_exists_script\"")
+    
+    # Clean up temporary files
+    rm -f "$log_exists_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_log_exists_script\"" > /dev/null 2>&1
     
     if [ "$log_exists" != "exists" ]; then
         echo -e "${RED}Log file does not exist.${NC}"
@@ -1488,9 +1720,35 @@ view_debug_log() {
         return 1
     fi
     
-    # Get log file size
-    local log_size=$(shellbe_ssh_command "$profile" "ls -lh \"$log_file\" 2>/dev/null | awk '{print \$5}' || echo 'unknown'")
-    local log_lines=$(shellbe_ssh_command "$profile" "wc -l \"$log_file\" 2>/dev/null | awk '{print \$1}' || echo 'unknown'")
+    # Create a script to get log file size and line count
+    local log_info_script="/tmp/wpd_log_info_${RANDOM}.sh"
+    cat > "$log_info_script" << EOF
+#!/bin/bash
+size=\$(ls -lh "$log_file" 2>/dev/null | awk '{print \$5}')
+echo "\$size"
+wc -l "$log_file" 2>/dev/null | awk '{print \$1}'
+EOF
+    chmod +x "$log_info_script"
+    
+    # Copy script to remote server
+    local remote_log_info_script="/tmp/wpd_log_info_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_log_info_script\"" < "$log_info_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_log_info_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local log_info=$(shellbe_ssh_command "$profile" "bash \"$remote_log_info_script\"")
+    
+    # Clean up temporary files
+    rm -f "$log_info_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_log_info_script\"" > /dev/null 2>&1
+    
+    # Parse results (line 1: size, line 2: line count)
+    local log_size=$(echo "$log_info" | sed -n '1p')
+    local log_lines=$(echo "$log_info" | sed -n '2p')
+    
+    # Default values if parsing fails
+    if [ -z "$log_size" ]; then log_size="unknown"; fi
+    if [ -z "$log_lines" ] || ! [[ "$log_lines" =~ ^[0-9]+$ ]]; then log_lines="unknown"; fi
     
     echo -e "${BLUE}Log file size: $log_size, Lines: $log_lines${NC}"
     
@@ -1515,13 +1773,51 @@ view_debug_log() {
         1)
             echo -e "${YELLOW}Displaying last $log_limit lines:${NC}"
             echo -e "${YELLOW}-----------------------------------${NC}"
-            shellbe_ssh_command "$profile" "tail -n $log_limit \"$log_file\""
+            # Create a script to view the last lines of the log
+            local tail_script="/tmp/wpd_tail_log_${RANDOM}.sh"
+            cat > "$tail_script" << EOF
+#!/bin/bash
+tail -n $log_limit "$log_file"
+EOF
+            chmod +x "$tail_script"
+            
+            # Copy script to remote server
+            local remote_tail_script="/tmp/wpd_tail_log_${RANDOM}.sh"
+            shellbe_ssh_command "$profile" "cat > \"$remote_tail_script\"" < "$tail_script"
+            shellbe_ssh_command "$profile" "chmod +x \"$remote_tail_script\"" > /dev/null 2>&1
+            
+            # Execute the script on the remote server
+            shellbe_ssh_command "$profile" "bash \"$remote_tail_script\""
+            
+            # Clean up temporary files
+            rm -f "$tail_script"
+            shellbe_ssh_command "$profile" "rm -f \"$remote_tail_script\"" > /dev/null 2>&1
+            
             echo -e "${YELLOW}-----------------------------------${NC}"
             ;;
         2)
             echo -e "${YELLOW}Displaying first $log_limit lines:${NC}"
             echo -e "${YELLOW}-----------------------------------${NC}"
-            shellbe_ssh_command "$profile" "head -n $log_limit \"$log_file\""
+            # Create a script to view the first lines of the log
+            local head_script="/tmp/wpd_head_log_${RANDOM}.sh"
+            cat > "$head_script" << EOF
+#!/bin/bash
+head -n $log_limit "$log_file"
+EOF
+            chmod +x "$head_script"
+            
+            # Copy script to remote server
+            local remote_head_script="/tmp/wpd_head_log_${RANDOM}.sh"
+            shellbe_ssh_command "$profile" "cat > \"$remote_head_script\"" < "$head_script"
+            shellbe_ssh_command "$profile" "chmod +x \"$remote_head_script\"" > /dev/null 2>&1
+            
+            # Execute the script on the remote server
+            shellbe_ssh_command "$profile" "bash \"$remote_head_script\""
+            
+            # Clean up temporary files
+            rm -f "$head_script"
+            shellbe_ssh_command "$profile" "rm -f \"$remote_head_script\"" > /dev/null 2>&1
+            
             echo -e "${YELLOW}-----------------------------------${NC}"
             ;;
         3)
@@ -1561,7 +1857,27 @@ view_debug_log() {
                     ;;
                 5)
                     echo -e "${YELLOW}Error Summary:${NC}"
-                    shellbe_ssh_command "$profile" "grep -E 'PHP (Fatal|Parse|Warning|Notice|Deprecated)' \"$log_file\" | sort | uniq -c | sort -nr"
+                    
+                    # Create a script to summarize error types
+                    local summary_script="/tmp/wpd_err_summary_${RANDOM}.sh"
+                    cat > "$summary_script" << EOF
+#!/bin/bash
+grep -E 'PHP (Fatal|Parse|Warning|Notice|Deprecated)' "$log_file" | sort | uniq -c | sort -nr
+EOF
+                    chmod +x "$summary_script"
+                    
+                    # Copy script to remote server
+                    local remote_summary_script="/tmp/wpd_err_summary_${RANDOM}.sh"
+                    shellbe_ssh_command "$profile" "cat > \"$remote_summary_script\"" < "$summary_script"
+                    shellbe_ssh_command "$profile" "chmod +x \"$remote_summary_script\"" > /dev/null 2>&1
+                    
+                    # Execute the script on the remote server
+                    shellbe_ssh_command "$profile" "bash \"$remote_summary_script\""
+                    
+                    # Clean up temporary files
+                    rm -f "$summary_script"
+                    shellbe_ssh_command "$profile" "rm -f \"$remote_summary_script\"" > /dev/null 2>&1
+                    
                     return 0
                     ;;
                 *)
@@ -1571,13 +1887,58 @@ view_debug_log() {
             esac
             
             echo -e "${YELLOW}-----------------------------------${NC}"
-            shellbe_ssh_command "$profile" "grep \"$grep_pattern\" \"$log_file\" | tail -n $log_limit"
+            
+            # Create a script to filter log by error type
+            local grep_script="/tmp/wpd_grep_log_${RANDOM}.sh"
+            cat > "$grep_script" << EOF
+#!/bin/bash
+grep "$grep_pattern" "$log_file" | tail -n $log_limit
+EOF
+            chmod +x "$grep_script"
+            
+            # Copy script to remote server
+            local remote_grep_script="/tmp/wpd_grep_log_${RANDOM}.sh"
+            shellbe_ssh_command "$profile" "cat > \"$remote_grep_script\"" < "$grep_script"
+            shellbe_ssh_command "$profile" "chmod +x \"$remote_grep_script\"" > /dev/null 2>&1
+            
+            # Execute the script on the remote server
+            shellbe_ssh_command "$profile" "bash \"$remote_grep_script\""
+            
+            # Clean up temporary files
+            rm -f "$grep_script"
+            shellbe_ssh_command "$profile" "rm -f \"$remote_grep_script\"" > /dev/null 2>&1
+            
             echo -e "${YELLOW}-----------------------------------${NC}"
             ;;
         4)
             read -p "Are you sure you want to clear the log file? (y/n): " confirm_clear
             if [[ "$confirm_clear" == "y" || "$confirm_clear" == "Y" ]]; then
-                if shellbe_ssh_command "$profile" "> \"$log_file\""; then
+                # Create a script to clear the log file
+                local clear_script="/tmp/wpd_clear_log_${RANDOM}.sh"
+                cat > "$clear_script" << EOF
+#!/bin/bash
+> "$log_file"
+if [ \$? -eq 0 ]; then
+    echo "success"
+else
+    echo "failure"
+fi
+EOF
+                chmod +x "$clear_script"
+                
+                # Copy script to remote server
+                local remote_clear_script="/tmp/wpd_clear_log_${RANDOM}.sh"
+                shellbe_ssh_command "$profile" "cat > \"$remote_clear_script\"" < "$clear_script"
+                shellbe_ssh_command "$profile" "chmod +x \"$remote_clear_script\"" > /dev/null 2>&1
+                
+                # Execute the script on the remote server
+                local clear_result=$(shellbe_ssh_command "$profile" "bash \"$remote_clear_script\"")
+                
+                # Clean up temporary files
+                rm -f "$clear_script"
+                shellbe_ssh_command "$profile" "rm -f \"$remote_clear_script\"" > /dev/null 2>&1
+                
+                if [ "$clear_result" = "success" ]; then
                     echo -e "${GREEN}Log file cleared.${NC}"
                 else
                     echo -e "${RED}Failed to clear log file. Check permissions.${NC}"
@@ -1800,12 +2161,13 @@ main() {
         if ! check_shellbe_profile "$profile"; then
             echo -e "${RED}Server profile '$profile' not found.${NC}"
             echo -e "${YELLOW}Available profiles:${NC}"
-            get_shellbe_profiles | while read -r server; do
-                if [ -n "$server" ]; then  # Skip empty lines
-                    echo -e "${CYAN}- $server${NC}"
-                fi
-            done
-            return 1
+get_shellbe_profiles | while read -r server; do
+                    if [ -n "$server" ]; then  # Skip empty lines
+                        echo -e "${CYAN}- $server${NC}"
+                    fi
+                done
+                return 1
+            fi
         fi
         
         # Execute the command

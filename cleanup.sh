@@ -80,6 +80,15 @@ if mkdir -p "$backup_dir"; then
         fi
     done
     
+    # Also backup template files if they exist
+    if [ -d "$PLUGIN_DIR/templates" ]; then
+        mkdir -p "$backup_dir/templates"
+        if ! cp -r "$PLUGIN_DIR/templates/"* "$backup_dir/templates/" 2>/dev/null; then
+            echo -e "${RED}Warning: Failed to backup template files${NC}" >&2
+            backup_success=false
+        fi
+    fi
+    
     if [ "$backup_success" = true ]; then
         echo -e "${GREEN}Configurations backed up to: $backup_dir${NC}"
     else
@@ -100,6 +109,19 @@ for temp_file in "$PLUGIN_DIR/.last_check_"*; do
         fi
     fi
 done
+
+# Remove any remaining temporary files on connected servers
+echo -e "${YELLOW}Checking for temporary remote files...${NC}"
+if [ -f "$HOME/.shellbe/config" ]; then
+    while IFS=: read -r name host user port identity options; do
+        if [ -z "$name" ]; then
+            continue  # Skip empty lines
+        }
+        
+        # Try to connect and remove any temporary files
+        shellbe_ssh_command "$name" "rm -f /tmp/wpd_*.*" > /dev/null 2>&1
+    done < "$HOME/.shellbe/config"
+fi
 
 # Remove symbolic link if exists
 SHELLBE_PLUGINS_DIR="$HOME/.shellbe/plugins"

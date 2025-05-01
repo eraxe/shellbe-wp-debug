@@ -28,6 +28,12 @@ mkdir -p "$PLUGIN_DIR/hooks" || {
     exit 1
 }
 
+# Create templates directory
+mkdir -p "$PLUGIN_DIR/templates/php" || {
+    echo -e "${RED}Error: Failed to create templates directories${NC}" >&2
+    exit 1
+}
+
 # Ensure all scripts are executable
 for script in "$PLUGIN_DIR"/plugin.sh "$PLUGIN_DIR"/lib.sh "$PLUGIN_DIR"/init.sh; do
     if [ -f "$script" ]; then
@@ -100,6 +106,139 @@ if [ ! -f "$PLUGIN_DIR/default_wp.ini" ]; then
     }
     echo -e "${GREEN}Created default WordPress selection file.${NC}"
 fi
+
+# Create template files
+echo -e "${BLUE}Creating template files...${NC}"
+
+# Create template for get_site_name.php
+cat > "$PLUGIN_DIR/templates/php/get_site_name.php" << 'EOT'
+<?php
+include "wp-config.php";
+try {
+    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if (!$conn) {
+        echo "Database connection failed";
+        exit(1);
+    }
+    
+    // Prepare query to prevent SQL injection
+    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, 's', $option_name);
+    $option_name = 'blogname';
+    
+    if (mysqli_stmt_execute($stmt)) {
+        mysqli_stmt_bind_result($stmt, $option_value);
+        if (mysqli_stmt_fetch($stmt)) {
+            echo $option_value;
+        }
+    }
+    
+    mysqli_stmt_close($stmt);
+    mysqli_close($conn);
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage();
+    exit(1);
+}
+EOT
+
+# Create template for get_active_theme.php
+cat > "$PLUGIN_DIR/templates/php/get_active_theme.php" << 'EOT'
+<?php
+include "wp-config.php";
+try {
+    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if (!$conn) {
+        echo "Database connection failed";
+        exit(1);
+    }
+    
+    // Prepare query to prevent SQL injection
+    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, 's', $option_name);
+    $option_name = 'template';
+    
+    if (mysqli_stmt_execute($stmt)) {
+        mysqli_stmt_bind_result($stmt, $option_value);
+        if (mysqli_stmt_fetch($stmt)) {
+            echo $option_value;
+        }
+    }
+    
+    mysqli_stmt_close($stmt);
+    mysqli_close($conn);
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage();
+    exit(1);
+}
+EOT
+
+# Create template for get_active_plugins.php
+cat > "$PLUGIN_DIR/templates/php/get_active_plugins.php" << 'EOT'
+<?php
+include "wp-config.php";
+try {
+    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if (!$conn) {
+        echo "Database connection failed";
+        exit(1);
+    }
+    
+    // Prepare query to prevent SQL injection
+    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, 's', $option_name);
+    $option_name = 'active_plugins';
+    
+    if (mysqli_stmt_execute($stmt)) {
+        mysqli_stmt_bind_result($stmt, $option_value);
+        if (mysqli_stmt_fetch($stmt)) {
+            // Just count the serialized values
+            $plugin_count = substr_count($option_value, 's:');
+            echo $plugin_count . " plugins active";
+        } else {
+            echo "0 plugins active";
+        }
+    }
+    
+    mysqli_stmt_close($stmt);
+    mysqli_close($conn);
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage();
+    exit(1);
+}
+EOT
+
+# Create template for check_site_url.php
+cat > "$PLUGIN_DIR/templates/php/check_site_url.php" << 'EOT'
+<?php
+include "wp-config.php";
+try {
+    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if (!$conn) {
+        echo "Database connection failed";
+        exit(1);
+    }
+    
+    // Prepare query to prevent SQL injection
+    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, 's', $option_name);
+    $option_name = 'siteurl';
+    
+    if (mysqli_stmt_execute($stmt)) {
+        mysqli_stmt_bind_result($stmt, $option_value);
+        if (mysqli_stmt_fetch($stmt)) {
+            echo $option_value;
+        }
+    }
+    
+    mysqli_stmt_close($stmt);
+    mysqli_close($conn);
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage();
+    exit(1);
+}
+EOT
+
+echo -e "${GREEN}Template files created.${NC}"
 
 # Check for existing ShellBe profiles
 CONFIG_DIR="$HOME/.shellbe"

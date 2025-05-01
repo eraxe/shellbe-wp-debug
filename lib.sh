@@ -6,6 +6,7 @@
 
 # Plugin directory
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATES_DIR="$PLUGIN_DIR/templates"
 
 # Path to saved WP config paths
 WP_PATHS_FILE="$PLUGIN_DIR/wp_paths.ini"
@@ -19,6 +20,12 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+# Create templates directory if it doesn't exist
+if [ ! -d "$TEMPLATES_DIR" ]; then
+    mkdir -p "$TEMPLATES_DIR/php" || { echo -e "${RED}Error: Could not create templates directory${NC}"; exit 1; }
+    chmod 755 "$TEMPLATES_DIR" "$TEMPLATES_DIR/php"
+fi
+
 # Create WP paths file if it doesn't exist
 if [ ! -f "$WP_PATHS_FILE" ]; then
     touch "$WP_PATHS_FILE" || { echo -e "${RED}Error: Could not create WP paths file${NC}"; exit 1; }
@@ -28,6 +35,125 @@ fi
 if [ ! -f "$DEFAULT_CONFIG_FILE" ]; then
     touch "$DEFAULT_CONFIG_FILE" || { echo -e "${RED}Error: Could not create default WP config file${NC}"; exit 1; }
 fi
+
+# Create or update a template file
+create_template_file() {
+    local filename="$1"
+    local content="$2"
+    local directory=$(dirname "$filename")
+    
+    # Create directory if it doesn't exist
+    if [ ! -d "$directory" ]; then
+        mkdir -p "$directory" || return 1
+    fi
+    
+    # Write content to file
+    echo "$content" > "$filename" || return 1
+    return 0
+}
+
+# Initialize template files
+initialize_templates() {
+    # PHP template for getting site name
+    cat > "$TEMPLATES_DIR/php/get_site_name.php" << 'EOT'
+<?php
+include "wp-config.php";
+try {
+    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if (!$conn) {
+        echo "Database connection failed";
+        exit(1);
+    }
+    
+    // Prepare query to prevent SQL injection
+    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, 's', $option_name);
+    $option_name = 'blogname';
+    
+    if (mysqli_stmt_execute($stmt)) {
+        mysqli_stmt_bind_result($stmt, $option_value);
+        if (mysqli_stmt_fetch($stmt)) {
+            echo $option_value;
+        }
+    }
+    
+    mysqli_stmt_close($stmt);
+    mysqli_close($conn);
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage();
+    exit(1);
+}
+EOT
+
+    # PHP template for getting active theme
+    cat > "$TEMPLATES_DIR/php/get_active_theme.php" << 'EOT'
+<?php
+include "wp-config.php";
+try {
+    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if (!$conn) {
+        echo "Database connection failed";
+        exit(1);
+    }
+    
+    // Prepare query to prevent SQL injection
+    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, 's', $option_name);
+    $option_name = 'template';
+    
+    if (mysqli_stmt_execute($stmt)) {
+        mysqli_stmt_bind_result($stmt, $option_value);
+        if (mysqli_stmt_fetch($stmt)) {
+            echo $option_value;
+        }
+    }
+    
+    mysqli_stmt_close($stmt);
+    mysqli_close($conn);
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage();
+    exit(1);
+}
+EOT
+
+    # PHP template for getting active plugins
+    cat > "$TEMPLATES_DIR/php/get_active_plugins.php" << 'EOT'
+<?php
+include "wp-config.php";
+try {
+    $conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if (!$conn) {
+        echo "Database connection failed";
+        exit(1);
+    }
+    
+    // Prepare query to prevent SQL injection
+    $stmt = mysqli_prepare($conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
+    mysqli_stmt_bind_param($stmt, 's', $option_name);
+    $option_name = 'active_plugins';
+    
+    if (mysqli_stmt_execute($stmt)) {
+        mysqli_stmt_bind_result($stmt, $option_value);
+        if (mysqli_stmt_fetch($stmt)) {
+            // Just count the serialized values
+            $plugin_count = substr_count($option_value, 's:');
+            echo $plugin_count . " plugins active";
+        } else {
+            echo "0 plugins active";
+        }
+    }
+    
+    mysqli_stmt_close($stmt);
+    mysqli_close($conn);
+} catch (Exception $e) {
+    echo "Error: " . $e->getMessage();
+    exit(1);
+}
+EOT
+}
+
+# Call the function to initialize templates
+initialize_templates
 
 # Load configuration from file
 load_config() {
@@ -300,12 +426,26 @@ get_debug_setting() {
         return 1
     fi
     
-    # Create a grep command to extract the setting
-    local grep_cmd="grep -o \"define.*['\\\"]$setting['\\\"].*true\|define.*['\\\"]$setting['\\\"].*false\|define.*['\\\"]$setting['\\\"].*['\\\"].*['\\\"]\" \"$wp_config_path\""
+    # Create a temporary grep script file
+    local temp_script="/tmp/wpd_grep_${RANDOM}.sh"
+    cat > "$temp_script" << EOF
+#!/bin/bash
+grep -o "define.*['\\"]$setting['\\"].*true\\|define.*['\\"]$setting['\\"].*false\\|define.*['\\"]$setting['\\"].*['\\"].*['\\"]" "$wp_config_path"
+EOF
+    chmod +x "$temp_script"
     
-    # Execute the command on the remote server
-    local result=$(shellbe_ssh_command "$profile" "$grep_cmd")
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_grep_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$temp_script"
+    chmod 0755 "$remote_script"
+    
+    # Execute the script on the remote server
+    local result=$(shellbe_ssh_command "$profile" "bash \"$remote_script\"")
     local exit_code=$?
+    
+    # Clean up temporary files
+    rm -f "$temp_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
     
     if [ $exit_code -ne 0 ]; then
         echo "false"  # Default if command failed
@@ -347,83 +487,64 @@ set_debug_setting() {
         return 1
     fi
     
-    # Properly escape the setting name for regex
-    local escaped_setting=$(echo "$setting" | sed 's/[\/&]/\\&/g')
+    # Create a temporary script with the sed operations
+    local temp_script="/tmp/wpd_set_debug_${RANDOM}.sh"
+    cat > "$temp_script" << EOF
+#!/bin/bash
+# Check if setting already exists
+setting_exists=\$(grep -c "define.*['\\"]$setting['\\"]" "$wp_config_path")
+
+if [ "\$setting_exists" -gt 0 ]; then
+    # Setting exists, update it
+    sed -i "s/define(.*['\\"]$setting['\\"].*);/define( '$setting', $value );/" "$wp_config_path"
+    exit \$?
+else
+    # Setting doesn't exist, add it
+    # First, try to find the section with other debug settings
+    debug_line=\$(grep -n "define.*['\\"]WP_DEBUG['\\"]" "$wp_config_path" | cut -d: -f1)
     
-    # Check if setting already exists
-    local setting_exists=$(shellbe_ssh_command "$profile" "grep -c \"define.*['\\\"]$escaped_setting['\\\"]\" \"$wp_config_path\"")
+    if [ -n "\$debug_line" ]; then
+        # Insert after WP_DEBUG line
+        line_number=\$((debug_line + 1))
+        sed -i "\${line_number}i define( '$setting', $value );" "$wp_config_path"
+        exit \$?
+    else
+        # Try to find a reasonable place to insert
+        wp_config_end=\$(grep -n "/* That's all, stop editing" "$wp_config_path" | cut -d: -f1)
+        
+        if [ -z "\$wp_config_end" ]; then
+            # Try another common pattern
+            wp_config_end=\$(grep -n "require_once" "$wp_config_path" | head -1 | cut -d: -f1)
+        fi
+        
+        if [ -n "\$wp_config_end" ]; then
+            # Insert before this line
+            sed -i "\${wp_config_end}i define( '$setting', $value );" "$wp_config_path"
+            exit \$?
+        else
+            # Append to the end of the file
+            echo "define( '$setting', $value );" >> "$wp_config_path"
+            exit \$?
+        fi
+    fi
+fi
+EOF
+    chmod +x "$temp_script"
+    
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_set_debug_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$temp_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    shellbe_ssh_command "$profile" "bash \"$remote_script\""
     local exit_code=$?
     
-    if [ $exit_code -ne 0 ]; then
-        echo "Error: Failed to check if setting exists" >&2
-        return 1
-    fi
+    # Clean up temporary files
+    rm -f "$temp_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
     
-    if [ "$setting_exists" -gt 0 ]; then
-        # Setting exists, update it
-        local sed_cmd="sed -i \"s/define(.*['\\\"]$escaped_setting['\\\"].*);/define( '$escaped_setting', $value );/\" \"$wp_config_path\""
-        shellbe_ssh_command "$profile" "$sed_cmd"
-        local exit_code=$?
-        
-        if [ $exit_code -ne 0 ]; then
-            echo "Error: Failed to update setting $setting in wp-config.php" >&2
-            return 1
-        fi
-    else
-        # Setting doesn't exist, add it
-        # First, try to find the section with other debug settings
-        local debug_line=$(shellbe_ssh_command "$profile" "grep -n \"define.*['\\\"]WP_DEBUG['\\\"]\" \"$wp_config_path\" | cut -d: -f1")
-        local exit_code=$?
-        
-        if [ $exit_code -ne 0 ]; then
-            debug_line=""  # Clear if command failed
-        fi
-        
-        if [ -n "$debug_line" ]; then
-            # Insert after WP_DEBUG line
-            local line_number=$((debug_line + 1))
-            local sed_cmd="sed -i \"${line_number}i define( '$escaped_setting', $value );\" \"$wp_config_path\""
-            shellbe_ssh_command "$profile" "$sed_cmd"
-            local exit_code=$?
-            
-            if [ $exit_code -ne 0 ]; then
-                echo "Error: Failed to add setting $setting to wp-config.php" >&2
-                return 1
-            }
-        else
-            # Try to find a reasonable place to insert
-            local wp_config_end=$(shellbe_ssh_command "$profile" "grep -n \"/* That's all, stop editing\" \"$wp_config_path\" | cut -d: -f1")
-            
-            if [ -z "$wp_config_end" ]; then
-                # Try another common pattern
-                wp_config_end=$(shellbe_ssh_command "$profile" "grep -n \"require_once\" \"$wp_config_path\" | head -1 | cut -d: -f1")
-            fi
-            
-            if [ -n "$wp_config_end" ]; then
-                # Insert before this line
-                local sed_cmd="sed -i \"${wp_config_end}i define( '$escaped_setting', $value );\" \"$wp_config_path\""
-                shellbe_ssh_command "$profile" "$sed_cmd"
-                local exit_code=$?
-                
-                if [ $exit_code -ne 0 ]; then
-                    echo "Error: Failed to add setting $setting to wp-config.php" >&2
-                    return 1
-                }
-            else
-                # Append to the end of the file
-                local echo_cmd="echo \"define( '$escaped_setting', $value );\" >> \"$wp_config_path\""
-                shellbe_ssh_command "$profile" "$echo_cmd"
-                local exit_code=$?
-                
-                if [ $exit_code -ne 0 ]; then
-                    echo "Error: Failed to add setting $setting to wp-config.php" >&2
-                    return 1
-                }
-            fi
-        fi
-    fi
-    
-    return 0
+    return $exit_code
 }
 
 # Create a backup of WordPress config file
@@ -480,12 +601,26 @@ list_wp_installations() {
         search_depth=5  # Default to safe value
     fi
     
-    # Build find command
-    local find_cmd="find $search_paths -type f -name wp-config.php -maxdepth $search_depth 2>/dev/null"
+    # Create a temporary script for the find operation
+    local temp_script="/tmp/wpd_find_${RANDOM}.sh"
+    cat > "$temp_script" << EOF
+#!/bin/bash
+find $search_paths -type f -name wp-config.php -maxdepth $search_depth 2>/dev/null
+EOF
+    chmod +x "$temp_script"
     
-    # Execute the command
-    local results=$(shellbe_ssh_command "$profile" "$find_cmd")
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_find_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$temp_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local results=$(shellbe_ssh_command "$profile" "bash \"$remote_script\"")
     local exit_code=$?
+    
+    # Clean up temporary files
+    rm -f "$temp_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
     
     if [ $exit_code -ne 0 ]; then
         echo "Error: Failed to search for WordPress installations" >&2
@@ -532,8 +667,8 @@ get_debug_log_path() {
     local debug_log=$(get_debug_setting "$profile" "$wp_config_path" "WP_DEBUG_LOG")
     
     if [[ "$debug_log" =~ ^[\"\']/.*[\"\']$ ]]; then
-        # Custom log path
-        echo "$debug_log" | sed 's/["\']//g'
+        # Custom log path - remove the quotes from the path
+        echo "${debug_log:1:${#debug_log}-2}"
     else
         # Default log path
         local wp_content_dir=$(dirname "$wp_config_path")/wp-content
@@ -547,36 +682,47 @@ get_debug_log_path() {
 execute_php_remote() {
     local profile="$1"
     local wp_dir="$2"
-    local php_code="$3"
+    local template_file="$3"
+    local output_file="$4"
+    local table_prefix="$5"
     
     # Input validation
-    if [ -z "$profile" ] || [ -z "$wp_dir" ] || [ -z "$php_code" ]; then
+    if [ -z "$profile" ] || [ -z "$wp_dir" ] || [ -z "$template_file" ]; then
         echo "Error: Missing required parameters for execute_php_remote" >&2
         return 1
     fi
     
-    # Create a temporary PHP file
-    local temp_file="/tmp/wpd_temp_${RANDOM}.php"
+    # If output file not specified, create a temporary one
+    if [ -z "$output_file" ]; then
+        output_file="/tmp/wpd_php_${RANDOM}.php"
+    fi
     
-    # Create the PHP file remotely
-    shellbe_ssh_command "$profile" "cat > $temp_file << 'EOPHP'
-<?php
-$php_code
-?>
-EOPHP"
-    local exit_code=$?
-    
-    if [ $exit_code -ne 0 ]; then
-        echo "Error: Failed to create temporary PHP file on remote server" >&2
+    # Check if template file exists
+    if [ ! -f "$template_file" ]; then
+        echo "Error: Template file not found: $template_file" >&2
         return 1
-    }
+    fi
+    
+    # Replace placeholders in template
+    local temp_php_file="/tmp/wpd_php_${RANDOM}.php"
+    cp "$template_file" "$temp_php_file"
+    
+    # Replace table prefix if provided
+    if [ -n "$table_prefix" ]; then
+        sed -i "s/{TABLE_PREFIX}/$table_prefix/g" "$temp_php_file"
+    fi
+    
+    # Copy script to remote server
+    shellbe_ssh_command "$profile" "cat > \"$output_file\"" < "$temp_php_file"
+    shellbe_ssh_command "$profile" "chmod +x \"$output_file\"" > /dev/null 2>&1
     
     # Execute the PHP file
-    local result=$(shellbe_ssh_command "$profile" "cd $wp_dir && php $temp_file")
+    local result=$(shellbe_ssh_command "$profile" "cd $wp_dir && php $output_file")
     local exit_code=$?
     
-    # Remove the temporary file
-    shellbe_ssh_command "$profile" "rm -f $temp_file" >/dev/null 2>&1
+    # Clean up temporary files
+    rm -f "$temp_php_file"
+    shellbe_ssh_command "$profile" "rm -f \"$output_file\"" > /dev/null 2>&1
     
     if [ $exit_code -ne 0 ]; then
         echo "Error: Failed to execute PHP code on remote server" >&2
@@ -598,10 +744,26 @@ get_wp_table_prefix() {
         return 1
     fi
     
-    # Extract table prefix
-    local table_prefix_cmd="grep \"table_prefix\" \"$wp_config_path\" | grep -o \"'[^']*'\\|\\\"[^\\\"]*\\\"\" | sed \"s/'//g\" | sed 's/\"//g'"
-    local table_prefix=$(shellbe_ssh_command "$profile" "$table_prefix_cmd")
+    # Create a temporary script to extract the table prefix
+    local temp_script="/tmp/wpd_table_prefix_${RANDOM}.sh"
+    cat > "$temp_script" << EOF
+#!/bin/bash
+grep "table_prefix" "$wp_config_path" | grep -o "'[^']*'\\|\"[^\"]*\"" | sed "s/'//g" | sed 's/"//g'
+EOF
+    chmod +x "$temp_script"
+    
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_table_prefix_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$temp_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local table_prefix=$(shellbe_ssh_command "$profile" "bash \"$remote_script\"")
     local exit_code=$?
+    
+    # Clean up temporary files
+    rm -f "$temp_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
     
     if [ $exit_code -ne 0 ] || [ -z "$table_prefix" ]; then
         # Default to wp_ if not found or error
@@ -630,19 +792,43 @@ is_production_site() {
         return 1
     fi
     
-    # Check for production indicators in wp-config.php
-    local grep_cmd="grep -E \"production|live|prod\" \"$wp_config_path\""
-    local result=$(shellbe_ssh_command "$profile" "$grep_cmd")
+    # Create a temporary script to check for production indicators
+    local temp_script="/tmp/wpd_check_prod_${RANDOM}.sh"
+    cat > "$temp_script" << EOF
+#!/bin/bash
+# Check for production indicators in wp-config.php
+if grep -qE "production|live|prod" "$wp_config_path"; then
+    echo "production"
+    exit 0
+fi
+
+# Check for staging/development indicators
+if grep -qE "staging|development|dev|test|local" "$wp_config_path"; then
+    echo "development"
+    exit 0
+fi
+
+# Default to production
+echo "unknown"
+EOF
+    chmod +x "$temp_script"
     
-    if [ -n "$result" ]; then
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_check_prod_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$temp_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local result=$(shellbe_ssh_command "$profile" "bash \"$remote_script\"")
+    local exit_code=$?
+    
+    # Clean up temporary files
+    rm -f "$temp_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
+    
+    if [ "$result" = "production" ]; then
         return 0
-    fi
-    
-    # Check for staging/development indicators
-    local grep_cmd="grep -E \"staging|development|dev|test|local\" \"$wp_config_path\""
-    local result=$(shellbe_ssh_command "$profile" "$grep_cmd")
-    
-    if [ -n "$result" ]; then
+    elif [ "$result" = "development" ]; then
         return 1
     fi
     
@@ -650,40 +836,42 @@ is_production_site() {
     local wp_dir=$(dirname "$wp_config_path")
     local table_prefix=$(get_wp_table_prefix "$profile" "$wp_config_path")
     
-    # Sanitize table prefix for SQL query
-    local sanitized_prefix=$(echo "$table_prefix" | sed 's/[^a-zA-Z0-9_]//g')
-    
-    # Use the execute_php_remote function to run PHP code
-    local php_code="
-    include \"wp-config.php\";
-    try {
-        \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-        if (!\$conn) {
-            echo \"Database connection failed\";
-            exit(1);
-        }
-        
-        // Prepare query to prevent SQL injection
-        \$stmt = mysqli_prepare(\$conn, \"SELECT option_value FROM {$sanitized_prefix}options WHERE option_name = ? LIMIT 1\");
-        mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
-        \$option_name = 'siteurl';
-        
-        if (mysqli_stmt_execute(\$stmt)) {
-            mysqli_stmt_bind_result(\$stmt, \$option_value);
-            if (mysqli_stmt_fetch(\$stmt)) {
-                echo \$option_value;
-            }
-        }
-        
-        mysqli_stmt_close(\$stmt);
-        mysqli_close(\$conn);
-    } catch (Exception \$e) {
-        echo \"Error: \" . \$e->getMessage();
+    # Create PHP file for checking site URL
+    local php_template="$TEMPLATES_DIR/php/check_site_url.php"
+    cat > "$php_template" << EOF
+<?php
+include "wp-config.php";
+try {
+    \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if (!\$conn) {
+        echo "Database connection failed";
         exit(1);
     }
-    "
     
-    local site_url=$(execute_php_remote "$profile" "$wp_dir" "$php_code")
+    // Prepare query to prevent SQL injection
+    \$stmt = mysqli_prepare(\$conn, "SELECT option_value FROM {TABLE_PREFIX}options WHERE option_name = ? LIMIT 1");
+    mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
+    \$option_name = 'siteurl';
+    
+    if (mysqli_stmt_execute(\$stmt)) {
+        mysqli_stmt_bind_result(\$stmt, \$option_value);
+        if (mysqli_stmt_fetch(\$stmt)) {
+            echo \$option_value;
+        }
+    }
+    
+    mysqli_stmt_close(\$stmt);
+    mysqli_close(\$conn);
+} catch (Exception \$e) {
+    echo "Error: " . \$e->getMessage();
+    exit(1);
+}
+EOF
+    
+    local site_url=$(execute_php_remote "$profile" "$wp_dir" "$php_template" "" "$table_prefix")
+    
+    # Clean up the temporary PHP template
+    rm -f "$php_template"
     
     if [[ "$site_url" =~ \.(dev|test|stage|local|example)(\.|$) ]]; then
         return 1
@@ -695,8 +883,24 @@ is_production_site() {
     fi
     
     # Look for wp-admin logged in users
-    local users_cmd="cd $wp_dir && find wp-content/uploads -name \"*.log\" -type f -mtime -7 | wc -l"
-    local recent_logs=$(shellbe_ssh_command "$profile" "$users_cmd")
+    local logs_script="/tmp/wpd_check_logs_${RANDOM}.sh"
+    cat > "$logs_script" << EOF
+#!/bin/bash
+cd $wp_dir && find wp-content/uploads -name "*.log" -type f -mtime -7 | wc -l
+EOF
+    chmod +x "$logs_script"
+    
+    # Copy script to remote server
+    local remote_logs_script="/tmp/wpd_check_logs_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_logs_script\"" < "$logs_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_logs_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local recent_logs=$(shellbe_ssh_command "$profile" "bash \"$remote_logs_script\"")
+    
+    # Clean up temporary files
+    rm -f "$logs_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_logs_script\"" > /dev/null 2>&1
     
     if [ "$recent_logs" -gt 10 ]; then
         # Active site with many recent logs, likely production
@@ -718,9 +922,26 @@ get_wp_version() {
         return 1
     fi
     
-    local version_cmd="cd $wp_dir && grep \"wp_version =\" wp-includes/version.php | grep -o \"[0-9]\+\.[0-9]\+\.[0-9]\+\" || echo 'unknown'"
-    local version=$(shellbe_ssh_command "$profile" "$version_cmd")
+    # Create a temporary script to extract the WordPress version
+    local temp_script="/tmp/wpd_wp_version_${RANDOM}.sh"
+    cat > "$temp_script" << EOF
+#!/bin/bash
+cd $wp_dir && grep "wp_version =" wp-includes/version.php | grep -o "[0-9]\+\.[0-9]\+\.[0-9]\+" || echo 'unknown'
+EOF
+    chmod +x "$temp_script"
+    
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_wp_version_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$temp_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local version=$(shellbe_ssh_command "$profile" "bash \"$remote_script\"")
     local exit_code=$?
+    
+    # Clean up temporary files
+    rm -f "$temp_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
     
     if [ $exit_code -ne 0 ]; then
         echo "unknown"
@@ -741,9 +962,26 @@ get_php_version() {
         return 1
     fi
     
-    local version_cmd="php -v | grep -oE \"PHP [0-9]+\.[0-9]+\.[0-9]+\" | head -1 || echo 'unknown'"
-    local version=$(shellbe_ssh_command "$profile" "$version_cmd")
+    # Create a temporary script to get the PHP version
+    local temp_script="/tmp/wpd_php_version_${RANDOM}.sh"
+    cat > "$temp_script" << EOF
+#!/bin/bash
+php -v | grep -oE "PHP [0-9]+\.[0-9]+\.[0-9]+" | head -1 || echo 'unknown'
+EOF
+    chmod +x "$temp_script"
+    
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_php_version_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$temp_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local version=$(shellbe_ssh_command "$profile" "bash \"$remote_script\"")
     local exit_code=$?
+    
+    # Clean up temporary files
+    rm -f "$temp_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
     
     if [ $exit_code -ne 0 ]; then
         echo "unknown"
@@ -772,27 +1010,62 @@ parse_error_log() {
         max_lines=100  # Default to safe value
     fi
     
-    # Check if file exists
-    local check_cmd="[ -f \"$log_path\" ] && echo 'exists' || echo 'not-exists'"
-    local exists=$(shellbe_ssh_command "$profile" "$check_cmd")
-    local exit_code=$?
+    # Create a temporary script to check if the log file exists
+    local check_script="/tmp/wpd_check_log_${RANDOM}.sh"
+    cat > "$check_script" << EOF
+#!/bin/bash
+if [ -f "$log_path" ]; then
+    echo "exists"
+else
+    echo "not-exists"
+fi
+EOF
+    chmod +x "$check_script"
     
-    if [ $exit_code -ne 0 ] || [ "$exists" != "exists" ]; then
+    # Copy script to remote server
+    local remote_check_script="/tmp/wpd_check_log_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_check_script\"" < "$check_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_check_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local exists=$(shellbe_ssh_command "$profile" "bash \"$remote_check_script\"")
+    
+    # Clean up temporary files
+    rm -f "$check_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_check_script\"" > /dev/null 2>&1
+    
+    if [ "$exists" != "exists" ]; then
         echo "Log file does not exist"
         return 1
     fi
     
-    # Get log file
-    local log_content=$(shellbe_ssh_command "$profile" "tail -n $max_lines \"$log_path\"")
+    # Create a temporary script to parse the error log
+    local parse_script="/tmp/wpd_parse_log_${RANDOM}.sh"
+    cat > "$parse_script" << EOF
+#!/bin/bash
+tail -n $max_lines "$log_path" | grep -E "PHP (Fatal|Parse|Warning|Notice|Deprecated)" | sort | uniq -c | sort -nr
+EOF
+    chmod +x "$parse_script"
+    
+    # Copy script to remote server
+    local remote_parse_script="/tmp/wpd_parse_log_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_parse_script\"" < "$parse_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_parse_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local result=$(shellbe_ssh_command "$profile" "bash \"$remote_parse_script\"")
     local exit_code=$?
     
+    # Clean up temporary files
+    rm -f "$parse_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_parse_script\"" > /dev/null 2>&1
+    
     if [ $exit_code -ne 0 ]; then
-        echo "Error: Failed to read log file"
+        echo "Error: Failed to parse log file"
         return 1
     }
     
-    # Parse errors and return structured output
-    echo "$log_content" | grep -E "PHP (Fatal|Parse|Warning|Notice|Deprecated)" | sort | uniq -c | sort -nr
+    echo "$result"
     return 0
 }
 
@@ -807,26 +1080,37 @@ check_wp_permissions() {
         return 1
     fi
     
-    # Check permissions of key directories
-    local cmd="find $wp_dir -type d -name wp-content -o -name uploads -o -name plugins -o -name themes | xargs ls -ld"
-    local dir_perms=$(shellbe_ssh_command "$profile" "$cmd")
+    # Create a temporary script to check permissions
+    local temp_script="/tmp/wpd_check_perms_${RANDOM}.sh"
+    cat > "$temp_script" << EOF
+#!/bin/bash
+echo "Directory permissions:"
+find $wp_dir -type d -name wp-content -o -name uploads -o -name plugins -o -name themes | xargs ls -ld
+echo ""
+echo "Config file:"
+ls -l "$2"
+EOF
+    chmod +x "$temp_script"
+    
+    # Copy script to remote server
+    local remote_script="/tmp/wpd_check_perms_${RANDOM}.sh"
+    shellbe_ssh_command "$profile" "cat > \"$remote_script\"" < "$temp_script"
+    shellbe_ssh_command "$profile" "chmod +x \"$remote_script\"" > /dev/null 2>&1
+    
+    # Execute the script on the remote server
+    local result=$(shellbe_ssh_command "$profile" "bash \"$remote_script\"")
     local exit_code=$?
     
+    # Clean up temporary files
+    rm -f "$temp_script"
+    shellbe_ssh_command "$profile" "rm -f \"$remote_script\"" > /dev/null 2>&1
+    
     if [ $exit_code -ne 0 ]; then
-        echo "Error: Failed to check directory permissions"
+        echo "Error: Failed to check permissions"
         return 1
     }
     
-    # Check if wp-config.php is readable by web server
-    local config_perms=$(shellbe_ssh_command "$profile" "ls -l \"$2\"")
-    local exit_code=$?
-    
-    if [ $exit_code -ne 0 ]; then
-        echo "Error: Failed to check wp-config.php permissions"
-        return 1
-    }
-    
-    echo -e "Directory permissions:\n$dir_perms\n\nConfig file:\n$config_perms"
+    echo "$result"
     return 0
 }
 
@@ -836,40 +1120,8 @@ get_wp_site_name() {
     local wp_dir=$(dirname "$2")
     local table_prefix=$(get_wp_table_prefix "$profile" "$2")
     
-    # Sanitize table prefix for SQL query
-    local sanitized_prefix=$(echo "$table_prefix" | sed 's/[^a-zA-Z0-9_]//g')
-    
-    # Use the execute_php_remote function to run PHP code
-    local php_code="
-    include \"wp-config.php\";
-    try {
-        \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-        if (!\$conn) {
-            echo \"Database connection failed\";
-            exit(1);
-        }
-        
-        // Prepare query to prevent SQL injection
-        \$stmt = mysqli_prepare(\$conn, \"SELECT option_value FROM {$sanitized_prefix}options WHERE option_name = ? LIMIT 1\");
-        mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
-        \$option_name = 'blogname';
-        
-        if (mysqli_stmt_execute(\$stmt)) {
-            mysqli_stmt_bind_result(\$stmt, \$option_value);
-            if (mysqli_stmt_fetch(\$stmt)) {
-                echo \$option_value;
-            }
-        }
-        
-        mysqli_stmt_close(\$stmt);
-        mysqli_close(\$conn);
-    } catch (Exception \$e) {
-        echo \"Error: \" . \$e->getMessage();
-        exit(1);
-    }
-    "
-    
-    local site_name=$(execute_php_remote "$profile" "$wp_dir" "$php_code")
+    # Use the execute_php_remote function to run PHP code using the template
+    local site_name=$(execute_php_remote "$profile" "$wp_dir" "$TEMPLATES_DIR/php/get_site_name.php" "" "$table_prefix")
     
     echo "$site_name"
     return 0
@@ -881,40 +1133,8 @@ get_wp_active_theme() {
     local wp_dir=$(dirname "$2")
     local table_prefix=$(get_wp_table_prefix "$profile" "$2")
     
-    # Sanitize table prefix for SQL query
-    local sanitized_prefix=$(echo "$table_prefix" | sed 's/[^a-zA-Z0-9_]//g')
-    
-    # Use the execute_php_remote function to run PHP code
-    local php_code="
-    include \"wp-config.php\";
-    try {
-        \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-        if (!\$conn) {
-            echo \"Database connection failed\";
-            exit(1);
-        }
-        
-        // Prepare query to prevent SQL injection
-        \$stmt = mysqli_prepare(\$conn, \"SELECT option_value FROM {$sanitized_prefix}options WHERE option_name = ? LIMIT 1\");
-        mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
-        \$option_name = 'template';
-        
-        if (mysqli_stmt_execute(\$stmt)) {
-            mysqli_stmt_bind_result(\$stmt, \$option_value);
-            if (mysqli_stmt_fetch(\$stmt)) {
-                echo \$option_value;
-            }
-        }
-        
-        mysqli_stmt_close(\$stmt);
-        mysqli_close(\$conn);
-    } catch (Exception \$e) {
-        echo \"Error: \" . \$e->getMessage();
-        exit(1);
-    }
-    "
-    
-    local theme=$(execute_php_remote "$profile" "$wp_dir" "$php_code")
+    # Use the execute_php_remote function to run PHP code using the template
+    local theme=$(execute_php_remote "$profile" "$wp_dir" "$TEMPLATES_DIR/php/get_active_theme.php" "" "$table_prefix")
     
     echo "$theme"
     return 0
@@ -926,44 +1146,8 @@ get_wp_active_plugins() {
     local wp_dir=$(dirname "$2")
     local table_prefix=$(get_wp_table_prefix "$profile" "$2")
     
-    # Sanitize table prefix for SQL query
-    local sanitized_prefix=$(echo "$table_prefix" | sed 's/[^a-zA-Z0-9_]//g')
-    
-    # Use the execute_php_remote function to run PHP code
-    local php_code="
-    include \"wp-config.php\";
-    try {
-        \$conn = mysqli_connect(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
-        if (!\$conn) {
-            echo \"Database connection failed\";
-            exit(1);
-        }
-        
-        // Prepare query to prevent SQL injection
-        \$stmt = mysqli_prepare(\$conn, \"SELECT option_value FROM {$sanitized_prefix}options WHERE option_name = ? LIMIT 1\");
-        mysqli_stmt_bind_param(\$stmt, 's', \$option_name);
-        \$option_name = 'active_plugins';
-        
-        if (mysqli_stmt_execute(\$stmt)) {
-            mysqli_stmt_bind_result(\$stmt, \$option_value);
-            if (mysqli_stmt_fetch(\$stmt)) {
-                // Just count the serialized values
-                \$plugin_count = substr_count(\$option_value, 's:');
-                echo \$plugin_count . \" plugins active\";
-            } else {
-                echo \"0 plugins active\";
-            }
-        }
-        
-        mysqli_stmt_close(\$stmt);
-        mysqli_close(\$conn);
-    } catch (Exception \$e) {
-        echo \"Error: \" . \$e->getMessage();
-        exit(1);
-    }
-    "
-    
-    local plugins=$(execute_php_remote "$profile" "$wp_dir" "$php_code")
+    # Use the execute_php_remote function to run PHP code using the template
+    local plugins=$(execute_php_remote "$profile" "$wp_dir" "$TEMPLATES_DIR/php/get_active_plugins.php" "" "$table_prefix")
     
     echo "$plugins"
     return 0
