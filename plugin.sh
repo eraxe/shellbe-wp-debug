@@ -26,7 +26,7 @@ if [ ! -d "$TEMPLATES_DIR" ]; then
         exit 1
     }
     chmod 755 "$TEMPLATES_DIR" "$TEMPLATES_DIR/php"
-}
+fi
 
 # Initialize configuration if it doesn't exist
 if [ ! -f "$CONFIG_FILE" ]; then
