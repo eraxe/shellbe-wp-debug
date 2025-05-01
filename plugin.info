@@ -1,0 +1,5 @@
+NAME=wpd
+VERSION=1.0.0
+AUTHOR=eraxe
+DESCRIPTION=WordPress debugging management plugin for ShellBe
+SOURCE_URL=https://github.com/eraxe/shellbe-wpd

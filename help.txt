@@ -1,0 +1,10 @@
+find [--search=<paths>] [--depth=<number>] [--save-path]                     Find WordPress installations
+list                                                                         List WordPress installations
+status [--path=<path>]                                                       Check debugging status
+enable [--path=<path>] [--display=<true|false>] [--script-debug=<true|false>] Enable debugging
+disable [--path=<path>]                                                      Disable debugging
+log [--path=<path>] [--debug-log=<path>] [--limit=<lines>]                   View debug log
+configure [--path=<path>]                                                    Configure debugging settings
+default                                                                      Set default WordPress installation
+config                                                                       Configure plugin settings
+help                                                                         Show help message
