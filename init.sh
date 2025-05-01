@@ -112,42 +112,42 @@ if [ -f "$CONFIG_DIR/config" ]; then
     # Read profiles from config
     while IFS=: read -r name host user port identity options; do
         if [ -z "$name" ]; then
-            continue  # Skip empty lines
-        fi
-        
+                    continue  # Skip empty lines
+                fi
+
         echo -e "${YELLOW}Checking profile '$name'... ${NC}"
-        
+
         # Check if we can connect to the server
         if shellbe_ssh_command "$name" "echo 'Connected'" | grep -q "Connected"; then
             echo -e "  ${GREEN}Connection successful${NC}"
-            
+
             # Look for WordPress installations
             echo -e "  ${YELLOW}Searching for WordPress installations (this may take a moment)...${NC}"
-            
+
             # Get default search paths from config
             DEFAULT_SEARCH_PATHS=$(grep "^default_search_paths=" "$PLUGIN_DIR/config.ini" | cut -d= -f2)
             MAX_SEARCH_DEPTH=$(grep "^max_search_depth=" "$PLUGIN_DIR/config.ini" | cut -d= -f2)
-            
+
             if [ -z "$DEFAULT_SEARCH_PATHS" ]; then
                 DEFAULT_SEARCH_PATHS="/var/www/html,/srv/www,/home"
             fi
-            
+
             if [ -z "$MAX_SEARCH_DEPTH" ] || ! [[ "$MAX_SEARCH_DEPTH" =~ ^[0-9]+$ ]]; then
                 MAX_SEARCH_DEPTH=5
             fi
-            
+
             # Sanitize paths for security
             DEFAULT_SEARCH_PATHS=$(echo "$DEFAULT_SEARCH_PATHS" | tr -d ';&|$()')
-            
+
             wp_installations=$(list_wp_installations "$name" "$DEFAULT_SEARCH_PATHS" "$MAX_SEARCH_DEPTH")
-            
+
             if [ -n "$wp_installations" ]; then
                 installation_count=$(echo "$wp_installations" | wc -l)
                 echo -e "  ${GREEN}Found $installation_count WordPress installation(s)${NC}"
-                
+
                 # Save all found installations
                 clear_wp_installations "$name"
-                
+
                 # Process each installation
                 while IFS= read -r wp_path; do
                     if [ -n "$wp_path" ]; then  # Skip empty lines
@@ -158,7 +158,7 @@ if [ -f "$CONFIG_DIR/config" ]; then
                         fi
                     fi
                 done <<< "$wp_installations"
-                
+
                 # If only one installation found, set it as default
                 if [ "$installation_count" -eq 1 ]; then
                     if save_default_wp_installation "$name" "$wp_installations"; then
@@ -172,10 +172,10 @@ if [ -f "$CONFIG_DIR/config" ]; then
                     if [[ "$set_default" == "y" || "$set_default" == "Y" ]]; then
                         # Display numbered list of installations
                         echo -e "  ${YELLOW}Select default WordPress installation:${NC}"
-                        
+
                         i=1
                         wp_paths=()
-                        
+
                         while IFS= read -r path; do
                             if [ -n "$path" ]; then  # Skip empty lines
                                 wp_paths+=("$path")
@@ -183,10 +183,10 @@ if [ -f "$CONFIG_DIR/config" ]; then
                                 i=$((i + 1))
                             fi
                         done <<< "$wp_installations"
-                        
+
                         # Get user selection
                         read -p "  Enter selection number: " selection
-                        
+
                         # Validate selection
                         if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -gt 0 ] && [ "$selection" -le "${#wp_paths[@]}" ]; then
                             selected_path="${wp_paths[$((selection - 1))]}"
@@ -200,7 +200,7 @@ if [ -f "$CONFIG_DIR/config" ]; then
                         fi
                     fi
                 fi
-                
+
                 found_wp=$((found_wp + 1))
             else
                 echo -e "  ${YELLOW}No WordPress installations found${NC}"
@@ -208,10 +208,10 @@ if [ -f "$CONFIG_DIR/config" ]; then
         else
             echo -e "  ${RED}Connection failed${NC}"
         fi
-        
+
         echo ""
     done < "$CONFIG_DIR/config"
-    
+
     if [ "$found_wp" -gt 0 ]; then
         echo -e "${GREEN}Saved WordPress paths for $found_wp profile(s)${NC}"
     else

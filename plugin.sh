@@ -41,8 +41,8 @@ EOF
     if [ $? -ne 0 ]; then
         echo -e "${RED}Error: Failed to create configuration file${NC}" >&2
         exit 1
-    }
-}
+    fi
+fi
 
 # Create required files if they don't exist
 for file in "$DEFAULT_CONFIG_FILE" "$WP_PATHS_FILE"; do
@@ -178,7 +178,7 @@ select_action() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     echo -e "${BLUE}WordPress actions for server: ${CYAN}$profile${NC}"
     
@@ -201,7 +201,7 @@ select_action() {
     if [[ ! "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt 9 ]; then
         echo -e "${RED}Invalid selection${NC}"
         return 1
-    }
+    fi
     
     # Execute selected action
     case "$selection" in
@@ -253,7 +253,7 @@ select_wp_installation() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     # Get list of WordPress installations
     local installations=$(get_wp_installations "$profile")
@@ -353,7 +353,7 @@ select_wp_installation() {
             echo -e "${GREEN}Default WordPress installation set to:${NC} $selected_path"
         else
             echo -e "${RED}Failed to set default WordPress installation${NC}"
-        }
+        fi
         return 0
     fi
     
@@ -391,7 +391,7 @@ list_wp_installations_interactive() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     # Get list of WordPress installations
     local installations=$(get_wp_installations "$profile")
@@ -467,7 +467,7 @@ find_wp_config() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     # Parse options
     local search_paths="$DEFAULT_SEARCH_PATHS"
@@ -558,7 +558,7 @@ EOF
                     echo -e "   ${GREEN}✓ Saved${NC}"
                 else
                     echo -e "   ${RED}✗ Failed to save${NC}"
-                }
+                fi
             fi
             
             count=$((count + 1))
@@ -592,7 +592,7 @@ configure_debugging() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -731,7 +731,7 @@ EOF
             if [[ "$continue_without_backup" != "y" && "$continue_without_backup" != "Y" ]]; then
                 echo -e "${YELLOW}Configuration cancelled.${NC}"
                 return 1
-            }
+            fi
         fi
     fi
     
@@ -989,7 +989,7 @@ check_debug_status() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -1250,7 +1250,7 @@ enable_debugging() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -1377,7 +1377,7 @@ EOF
             if [[ "$continue_without_backup" != "y" && "$continue_without_backup" != "Y" ]]; then
                 echo -e "${YELLOW}Debugging not enabled.${NC}"
                 return 1
-            }
+            fi
         fi
     fi
     
@@ -1453,7 +1453,7 @@ disable_debugging() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -1531,7 +1531,7 @@ EOF
             if [[ "$continue_without_backup" != "y" && "$continue_without_backup" != "Y" ]]; then
                 echo -e "${YELLOW}Debugging not disabled.${NC}"
                 return 1
-            }
+            fi
         fi
     fi
     
@@ -1583,7 +1583,7 @@ view_debug_log() {
     if [ -z "$profile" ]; then
         echo -e "${RED}Error: No profile specified${NC}" >&2
         return 1
-    }
+    fi
     
     # Parse options and get WP config path
     local wp_config_path=""
@@ -1767,7 +1767,7 @@ EOF
     if [[ ! "$log_option" =~ ^[0-9]+$ ]] || [ "$log_option" -lt 1 ] || [ "$log_option" -gt 5 ]; then
         echo -e "${RED}Invalid option${NC}"
         return 1
-    }
+    fi
     
     case "$log_option" in
         1)
@@ -1835,7 +1835,7 @@ EOF
             if [[ ! "$error_option" =~ ^[0-9]+$ ]] || [ "$error_option" -lt 1 ] || [ "$error_option" -gt 5 ]; then
                 echo -e "${RED}Invalid option${NC}"
                 return 1
-            }
+            fi
             
             local grep_pattern=""
             case "$error_option" in
@@ -1942,7 +1942,7 @@ EOF
                     echo -e "${GREEN}Log file cleared.${NC}"
                 else
                     echo -e "${RED}Failed to clear log file. Check permissions.${NC}"
-                }
+                fi
             else
                 echo -e "${YELLOW}Log file not cleared.${NC}"
             fi
@@ -1979,7 +1979,7 @@ configure_plugin() {
         echo -e "${RED}Invalid option${NC}"
         configure_plugin  # Recursive call
         return 0
-    }
+    fi
     
     case "$option" in
         1)
@@ -2129,7 +2129,7 @@ main() {
         if [ "$profile" = "help" ] || [ "$profile" = "--help" ] || [ "$profile" = "-h" ]; then
             show_usage
             return 0
-        }
+        fi
         
         # Check if the profile exists
         if ! check_shellbe_profile "$profile"; then
@@ -2162,12 +2162,11 @@ main() {
             echo -e "${RED}Server profile '$profile' not found.${NC}"
             echo -e "${YELLOW}Available profiles:${NC}"
 get_shellbe_profiles | while read -r server; do
-                    if [ -n "$server" ]; then  # Skip empty lines
-                        echo -e "${CYAN}- $server${NC}"
-                    fi
-                done
-                return 1
-            fi
+                if [ -n "$server" ]; then  # Skip empty lines
+                    echo -e "${CYAN}- $server${NC}"
+                fi
+            done
+            return 1
         fi
         
         # Execute the command
